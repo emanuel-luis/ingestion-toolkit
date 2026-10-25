@@ -1,0 +1,50 @@
+version: 1
+source:
+  name: erp
+  source_type: rdbms
+  connection_id: erp
+  database: erp
+  schema_name: sales
+extract:
+  table: customers
+  primary_key:
+    - id
+  pattern: incremental
+  columns:
+    - name: id
+      type: integer
+      nullable: false
+    - name: name
+      type: text
+      nullable: true
+    - name: email
+      type: text
+      nullable: true
+    - name: city
+      type: text
+      nullable: true
+    - name: created_at
+      type: timestamp
+      nullable: true
+    - name: updated_at
+      type: timestamp
+      nullable: true
+  watermark:
+    column: updated_at
+    type: datetime
+load:
+  connection_id: warehouse
+  target_schema: bronze
+  target_table: erp__customers
+  write_mode: append
+  max_reject_ratio: 0.0
+landing:
+  root: /opt/airflow/data/landing
+schedule:
+  cron: '@daily'
+  start_date: 2026-01-01
+  retries: 3
+  retry_delay_minutes: 5
+  tags: []
+metadata:
+  owner: data-engineering
