@@ -29,6 +29,9 @@ All notable changes to this project are documented here. The format follows
   to `ops.ingestion_rejects`, and run metadata and the incremental watermark live in the `ops`
   schema, written in the same transaction as the load. Options: `--output-dir`, `--template-dir`,
   `--dry-run`. A bulk render is all or nothing.
+- Rendered loads refuse a stale extract: clearing only `load_bronze` of an older run after a
+  later run succeeded fails with a hint to re-run the whole DAG run, instead of duplicating rows
+  or moving the watermark back.
 - Golden files for the two examples (`pytest --update-golden` rewrites them), a Hypothesis
   property that every valid config renders to parseable, deterministic code, and a
   `scripts/check_dag_imports.py` DagBag gate run by the new `dag-import` CI job against Airflow

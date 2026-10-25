@@ -54,6 +54,8 @@ WHERE.
 Finds the partition from its own run id (the extract's XCom is for display), so a retry replays
 exactly the same input. One target transaction does all of this:
 
+0. Stale-load check (see "State, idempotency and re-runs"): the load refuses an extract that a
+   later run has already superseded.
 1. `CREATE TABLE IF NOT EXISTS` bronze. With a `columns` contract the types come from it (integer
    is bigint, float is double precision); without one every column is text, named from the
    manifest. Every table gets `_ingest_run_id` and `_ingest_loaded_at`.
@@ -84,6 +86,12 @@ retry it. Any other exception (a network error, a lock) retries as the schedule 
 - An extract with no rows leaves the state alone.
 - Out-of-order guard: re-running a run that already moved the watermark, after a later run has
   moved it again, fails with a hint to trigger a new run, because its old window is gone.
+- Stale-load guard, for clearing only `load_bronze` of an older run after a later run succeeded.
+  Incremental: the load locks the state row (`FOR UPDATE`) and requires the manifest's
+  `watermark_from` to equal the lower bound the state now gives this run; otherwise loading would
+  duplicate the later run's rows and move the watermark back. Full scan: the load refuses when
+  another run already loaded a snapshot extracted later. Both fail without retry and without
+  touching the run rows, with a hint to clear the whole DAG run so the extract runs again.
 - Watermark and initial values are stored as text. An integer watermark is bigint in bronze, so
   the config rejects initial values beyond the bigint range.
 

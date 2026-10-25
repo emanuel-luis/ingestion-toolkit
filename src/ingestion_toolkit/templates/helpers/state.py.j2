@@ -48,6 +48,23 @@ def _guard_order(cur: object, state: tuple | None, run_id: str) -> None:
         )
 
 
+def _check_not_stale(cur: object, manifest: dict) -> None:
+    """Load only the window the state still assigns to this run.
+
+    Locks the state row until commit. If a later run moved the watermark after this run's
+    extract (say only this load_bronze was cleared), loading would duplicate that run's rows
+    and move the watermark back, so the load fails and asks for a full re-run instead.
+    """
+    cur.execute(STATE_SQL.rstrip() + " FOR UPDATE", (DAG_ID,))
+    expected = _lower_bound(cur.fetchone(), manifest["run_id"])
+    if manifest["watermark_from"] != expected:
+        raise AirflowFailException(
+            f"this run extracted rows above {manifest['watermark_from']!r}, but the stored "
+            f"watermark now starts it at {expected!r}: a later run already loaded that window. "
+            "Fix: clear the whole DAG run so the extract runs again, not load_bronze alone"
+        )
+
+
 def _advance_state(cur: object, manifest: dict) -> None:
     """Move the watermark to the highest value extracted. An empty extract leaves it alone."""
     if manifest["watermark_to"] is None:
