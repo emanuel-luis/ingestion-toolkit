@@ -57,6 +57,14 @@ def test_init_keeps_a_gitignore_that_already_ignores_output(tmp_path: Path) -> N
     assert ".gitignore" not in result.stdout
 
 
+def test_unreadable_gitignore_fails_before_writing_anything(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").mkdir()  # a directory where the file should be
+    result = runner.invoke(app, ["init", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "cannot create the project" in result.stderr
+    assert not (tmp_path / "configs").exists()
+
+
 def test_init_into_a_file_exits_1(tmp_path: Path) -> None:
     blocker = tmp_path / "blocker"
     blocker.write_text("x", encoding="utf-8")
