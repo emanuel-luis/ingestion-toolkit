@@ -1,0 +1,89 @@
+
+
+BATCH_SIZE = 10_000
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _partition_dir(run_id: str) -> Path:
+    """One landing partition per Airflow run: the same run_id always maps to the same folder."""
+    return Path(LANDING_DIR) / ("run_id=" + re.sub(r"[^A-Za-z0-9_.=-]", "_", run_id))
+
+
+def _jsonable(column: str, value: object) -> object:
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"column {column!r}: non-finite float {value!r} cannot be stored")
+        return value
+    if isinstance(value, datetime | date | time):
+        return value.isoformat()
+    if isinstance(value, Decimal | UUID):
+        return str(value)
+    if isinstance(value, bytes | bytearray | memoryview):
+        return "0x" + bytes(value).hex().upper()
+    raise TypeError(f"column {column!r}: unsupported value type {type(value).__name__}")
+
+
+def _watermark_text(column: str, value: object) -> str:
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    raise TypeError(f"watermark column {column!r}: unsupported value type {type(value).__name__}")
+
+
+def _write_partition(
+    partition: Path, cursor: object, track: str | None = None
+) -> tuple[list[str], int, str | None]:
+    """Stream the cursor into part-00000.jsonl. Returns columns, row count and the high mark."""
+    shutil.rmtree(partition, ignore_errors=True)
+    partition.mkdir(parents=True)
+    columns = [description[0] for description in cursor.description]
+    index = columns.index(track) if track is not None else None
+    high = None
+    count = 0
+    temp = partition / "part-00000.jsonl.tmp"
+    with temp.open("w", encoding="utf-8", newline="\n") as handle:
+        while batch := cursor.fetchmany(BATCH_SIZE):
+            for row in batch:
+                if index is not None and row[index] is not None:
+                    mark = row[index]
+                    high = mark if high is None or mark > high else high
+                record = {c: _jsonable(c, v) for c, v in zip(columns, row, strict=True)}
+                handle.write(json.dumps(record, allow_nan=False) + "\n")
+                count += 1
+    temp.replace(partition / "part-00000.jsonl")
+    return columns, count, None if high is None else _watermark_text(track, high)
+
+
+def _write_manifest(
+    partition: Path,
+    run_id: str,
+    started_at: str,
+    columns: list[str],
+    row_count: int,
+    watermark_from: str | None = None,
+    watermark_to: str | None = None,
+) -> dict:
+    """Written last: a partition without a manifest is not committed."""
+    manifest = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "extracted_at": _utcnow(),
+        "columns": columns,
+        "row_count": row_count,
+        "watermark_from": watermark_from,
+        "watermark_to": watermark_to,
+    }
+    temp = partition / "_manifest.json.tmp"
+    temp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    temp.replace(partition / "_manifest.json")
+    return manifest
+
+
+def _read_manifest(partition: Path) -> dict:
+    return json.loads((partition / "_manifest.json").read_text(encoding="utf-8"))

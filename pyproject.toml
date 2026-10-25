@@ -26,6 +26,7 @@ dependencies = [
     "typer>=0.27",
     "pydantic>=2.14",
     "pyyaml>=6.0.3",
+    "jinja2>=3.1.6",
 ]
 
 [project.scripts]
@@ -53,6 +54,11 @@ line-length = 100
 [tool.ruff.lint]
 extend-select = ["BLE"]
 
+[tool.ruff.lint.per-file-ignores]
+# rendered DAGs keep long SQL lines and a long header comment, and use timezone.utc so they
+# also run on Python 3.10 (datetime.UTC is 3.11+)
+"tests/golden/*.py" = ["E501", "UP017"]
+
 [tool.mypy]
 strict = true
 files = ["src"]
@@ -61,5 +67,6 @@ enable_error_code = ["ignore-without-code"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--strict-config"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not slow"]
 timeout = 60
+markers = ["slow: property tests that render many configs (run with -m slow)"]

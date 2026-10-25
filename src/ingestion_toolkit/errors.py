@@ -27,3 +27,11 @@ def format_error(error: ConfigError) -> str:
     """Render an error as the single stderr line the CLI prints."""
     message = error.message.rstrip(". ")
     return f"error: {error.path}: {error.loc}: {message}. Fix: {error.hint}"
+
+
+class RenderError(Exception):
+    """Raised when a config cannot be rendered into a DAG file."""
+
+    def __init__(self, error: ConfigError) -> None:
+        super().__init__(format_error(error))
+        self.error = error
