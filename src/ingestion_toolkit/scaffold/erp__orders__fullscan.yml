@@ -1,0 +1,39 @@
+# Starter config written by `ingest init`. One file per source table; the file name must be
+# {source}__{table}__{pattern}.yml. Check it with `ingest validate`, then run `ingest render`.
+# Other patterns: `ingest add rdbms incremental`, `ingest add rdbms cdc`, `ingest add mssql cdc`.
+version: 1
+source:
+  name: erp # lowercase segment, becomes part of the DAG id
+  source_type: rdbms # rdbms | mssql
+  connection_id: erp # Airflow connection id of the source, default: the source name
+  database: erp
+  schema_name: public
+extract:
+  table: orders
+  primary_key:
+    - id
+  pattern: fullscan # fullscan | incremental | cdc
+  # Optional data contract: typed bronze columns and row checks. Without it bronze is all text.
+  columns:
+    - name: id
+      type: integer
+      nullable: false
+    - name: total
+      type: numeric
+      nullable: true
+load:
+  connection_id: warehouse # Airflow connection id of the target PostgreSQL
+  target_schema: bronze
+  target_table: erp__orders
+  write_mode: overwrite # fullscan: overwrite | append
+  max_reject_ratio: 0.0 # share of rows that may fail the contract before the run fails
+landing:
+  root: /opt/airflow/data/landing
+schedule:
+  cron: '@daily'
+  start_date: 2026-01-01
+  retries: 3
+  retry_delay_minutes: 5
+  tags: []
+metadata:
+  owner: data-engineering

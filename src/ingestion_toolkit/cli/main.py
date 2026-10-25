@@ -7,7 +7,7 @@ from typing import Annotated
 import typer
 
 from ingestion_toolkit import __version__
-from ingestion_toolkit.cli import add, render, validate
+from ingestion_toolkit.cli import add, init, render, validate
 
 app = typer.Typer(
     name="ingest",
@@ -16,6 +16,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(add.app, name="add")
+app.command("init")(init.init)
 app.command("validate")(validate.validate)
 app.command("render")(render.render)
 
