@@ -51,11 +51,12 @@ def init(
         raise typer.Exit(1)
     starter = (resources.files("ingestion_toolkit") / "scaffold" / STARTER).read_text("utf-8")
     try:
+        # read .gitignore first, so a failure there leaves nothing half written
+        created = not gitignore.exists()
+        addition = _gitignore_addition(gitignore)
         config.parent.mkdir(parents=True, exist_ok=True)
         (directory / "output").mkdir(exist_ok=True)
         config.write_text(starter, encoding="utf-8", newline="\n")
-        created = not gitignore.exists()
-        addition = _gitignore_addition(gitignore)
         if addition:
             with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(addition)
@@ -65,7 +66,7 @@ def init(
                 ConfigError(
                     directory.as_posix(),
                     "file",
-                    f"cannot write: {exc.strerror or exc}",
+                    f"cannot create the project: {exc.strerror or exc}",
                     "check that the directory is writable",
                 )
             ]
