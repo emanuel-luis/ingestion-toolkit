@@ -117,7 +117,7 @@ Exit codes: 0 when everything is valid, 1 for an invalid config or a refused ove
 
 ## Config reference
 
-The file name must be `{source}__{table}__{pattern}` in lowercase, for example `erp__orders__fullscan.yml`. Unknown fields are rejected, and so are duplicate YAML keys.
+The file name must be `{source}__{table}__{pattern}` in lowercase, for example `erp__orders__fullscan.yml`. Unknown fields are rejected, and so are duplicate YAML keys. An optional section (`load`, `landing`, `schedule`, `metadata`) that is missing or null takes its defaults; to run a DAG only when triggered, set `schedule.cron: null` instead.
 
 | Section | Field | Default | Notes |
 | --- | --- | --- | --- |
