@@ -14,3 +14,8 @@ build/
 # the CLI's default working directories, at the repo root only
 /output/
 /configs/
+
+# demo: rendered DAGs and landing files are generated; the folders stay
+/demo/dags/*.py
+/demo/data/landing/*
+!/demo/data/landing/.gitkeep
