@@ -141,7 +141,7 @@ uv run ingest validate my-ingestion/configs
 uv run ingest render my-ingestion/configs --output-dir my-ingestion/output
 ```
 
-`ingest init [DIR]` writes `configs/erp__orders__fullscan.yml` (a commented starter that validates), an empty `output/` and a `.gitignore` that ignores it. It refuses to overwrite existing files without `--force`.
+`ingest init [DIR]` writes `configs/erp__orders__fullscan.yml` (a commented starter that validates), and an empty `output/`, and makes git ignore `output/`: it creates `.gitignore` or appends the line to an existing one, never replacing it. It refuses to overwrite an existing starter config without `--force`.
 
 ### Render DAGs
 
@@ -149,7 +149,7 @@ uv run ingest render my-ingestion/configs --output-dir my-ingestion/output
 uv run ingest render examples/postgres examples/mssql --output-dir output
 ```
 
-This writes one file per example, such as `output/erp__orders__fullscan.py` and `output/erp__products__cdc.py`. Put them in your Airflow `dags` folder, with connections `erp` (the source) and `warehouse` (the target PostgreSQL) defined. `--dry-run` lists the files without writing, and `--template-dir DIR` overrides built-in templates file by file. If any config is invalid nothing is written. The rendered incremental DAG reads like this (shortened):
+This writes one file per example, such as `output/erp__orders__fullscan.py` and `output/erp__products__cdc.py`. Put them in your Airflow `dags` folder, with one connection per source (`erp` for the Postgres examples, `erp_mssql` for the SQL Server one) and `warehouse` (the target PostgreSQL) defined. `--dry-run` lists the files without writing, and `--template-dir DIR` overrides built-in templates file by file. If any config is invalid nothing is written. The rendered incremental DAG reads like this (shortened):
 
 ```python
 @task
