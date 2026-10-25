@@ -46,13 +46,28 @@ jobs:
             uv run --isolated --no-project --with "$f" ingest --version
           done
 
+  test:
+    name: lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11", enable-cache: false }
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
+
   # The publish jobs attest too: the OIDC token that signs stays out of `build`, which runs
   # code installed from PyPI. Provenance names the workflow run, not the job, and the digests
   # are those of the files uploaded. The dry run attests as well, so it exercises the step.
   testpypi:
     name: publish to TestPyPI (dry run)
-    if: github.event_name == 'workflow_dispatch'
-    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [build, test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -73,7 +88,7 @@ jobs:
   pypi:
     name: publish to PyPI
     if: github.event_name == 'push'
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
