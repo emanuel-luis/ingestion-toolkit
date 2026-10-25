@@ -1,0 +1,48 @@
+version: 1
+source:
+  name: erp_mssql
+  source_type: mssql
+  connection_id: erp_mssql
+  database: erp
+  schema_name: dbo
+extract:
+  table: products
+  primary_key:
+    - id
+  pattern: cdc
+  columns:
+    - name: id
+      type: integer
+      nullable: false
+    - name: name
+      type: text
+      nullable: true
+    - name: price
+      type: numeric
+      nullable: true
+    - name: row_version
+      type: text
+      nullable: false
+  cdc:
+    mechanism: rowversion
+    sequence_column: row_version
+    delete_values:
+      - D
+load:
+  connection_id: warehouse
+  target_schema: bronze
+  target_table: erp_mssql__products
+  write_mode: merge
+  merge_keys:
+    - id
+  max_reject_ratio: 0.0
+landing:
+  root: /opt/airflow/data/landing
+schedule:
+  cron: '@daily'
+  start_date: 2026-01-01
+  retries: 3
+  retry_delay_minutes: 5
+  tags: []
+metadata:
+  owner: data-engineering

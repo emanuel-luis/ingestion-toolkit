@@ -15,7 +15,7 @@ from ingestion_toolkit.renderer import Renderer
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = Path(__file__).parent / "golden"
-EXAMPLES = sorted((ROOT / "examples" / "postgres").glob("*.yml"))
+EXAMPLES = sorted((ROOT / "examples").glob("*/*.yml"))
 
 
 @pytest.mark.parametrize("config_path", EXAMPLES, ids=lambda p: p.stem)

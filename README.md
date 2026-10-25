@@ -9,14 +9,14 @@
 ## What this demonstrates
 
 - Config as a contract: frozen, typed Pydantic models with explicit validators. Every error names the file, the field and a fix.
-- Two ingestion patterns as data: full scan and incremental (watermark), with the write mode derived from the pattern, an optional column contract and a tolerated reject ratio.
+- Three ingestion patterns as data: full scan, incremental (watermark) and change data capture (a sequence column or a SQL Server rowversion), with the write mode derived from the pattern, an optional column contract and a tolerated reject ratio.
 - Deterministic output: the same command writes the same bytes, and a test rebuilds the files in `examples/` from the documented commands.
 - Config to code: Jinja templates with no logic render one DAG file per config. Golden files pin the output, the generated code must parse and be `ruff format` clean, and CI imports the rendered DAGs with the DagBag of Airflow 3.3.2.
-- Data engineering practice in the generated DAG: a landing layer (JSON Lines per run plus a manifest), a bronze table typed from a column contract, a rejects table, run metadata, and a watermark kept in the target database and advanced in the same transaction as the load, so a retry of the same run is idempotent.
+- Data engineering practice in the generated DAG: a landing layer (JSON Lines per run plus a manifest), a bronze table typed from a column contract, a rejects table, run metadata, and a watermark kept in the target database and advanced in the same transaction as the load, so a retry of the same run is idempotent. Merge loads keep the highest version per key, so replaying a window changes nothing.
 - Property-based tests (Hypothesis) for naming, cron validation, the column spec and the model round trip, on top of CLI tests.
 - A typed, src-layout package built with uv, checked with ruff and strict mypy.
 
-Roadmap: a change data capture pattern with merge loads and `ingest init`. The rendered DAGs run end to end against Postgres in the compose demo below, and CI runs that demo as a smoke test.
+The rendered DAGs run end to end against Postgres in the compose demo below, and CI runs that demo as a smoke test.
 
 ## How it works
 
@@ -33,7 +33,7 @@ flowchart LR
   end
 ```
 
-`ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. `ingest render` turns each config into a DAG file. The CLI never imports Airflow. See [docs/generated-dags.md](docs/generated-dags.md) for what a rendered DAG does, layer by layer.
+`ingest init` lays out a project, `ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. `ingest render` turns each config into a DAG file. The CLI never imports Airflow. See [docs/generated-dags.md](docs/generated-dags.md) for what a rendered DAG does, layer by layer.
 
 ## Tech stack
 
@@ -113,13 +113,43 @@ uv run ingest add rdbms incremental \
   --watermark-column updated_at --watermark-type datetime
 ```
 
+A CDC config reads a change feed ordered by a sequence column and merges it into bronze. `examples/postgres/erp__products__cdc.yml` comes from:
+
+```bash
+uv run ingest add rdbms cdc \
+  --source erp --database erp --schema sales --table products --primary-key id \
+  --columns "id:integer!,name:text,category:text,price:numeric,version_stamp:integer!" \
+  --sequence-column version_stamp
+```
+
+Options for `rdbms cdc`: `--sequence-type integer|datetime`, `--change-table`, `--operation-column`, `--delete-values D,X` and `--merge-keys`. For SQL Server, a rowversion column replaces the sequence, and the schema defaults to dbo. `examples/mssql/erp_mssql__products__cdc.yml` comes from:
+
+```bash
+uv run ingest add mssql cdc \
+  --source erp_mssql --database erp --table products --primary-key id \
+  --columns "id:integer!,name:text,price:numeric,row_version:text!" \
+  --rowversion-column row_version
+```
+
+What a source must provide, and the ordering and delete caveats, are in [docs/cdc-contract.md](docs/cdc-contract.md).
+
+### Start a project
+
+```bash
+uv run ingest init my-ingestion
+uv run ingest validate my-ingestion/configs
+uv run ingest render my-ingestion/configs --output-dir my-ingestion/output
+```
+
+`ingest init [DIR]` writes `configs/erp__orders__fullscan.yml` (a commented starter that validates), and an empty `output/`, and makes git ignore `output/`: it creates `.gitignore` or appends the line to an existing one, never replacing it. It refuses to overwrite an existing starter config without `--force`.
+
 ### Render DAGs
 
 ```bash
-uv run ingest render examples/postgres --output-dir output
+uv run ingest render examples/postgres examples/mssql --output-dir output
 ```
 
-This writes `output/erp__orders__fullscan.py` and `output/erp__customers__incremental.py`. Put them in your Airflow `dags` folder, with connections `erp` (the source) and `warehouse` (the target PostgreSQL) defined. `--dry-run` lists the files without writing, and `--template-dir DIR` overrides built-in templates file by file. If any config is invalid nothing is written. The rendered incremental DAG reads like this (shortened):
+This writes one file per example, such as `output/erp__orders__fullscan.py` and `output/erp__products__cdc.py`. Put them in your Airflow `dags` folder, with one connection per source (`erp` for the Postgres examples, `erp_mssql` for the SQL Server one) and `warehouse` (the target PostgreSQL) defined. `--dry-run` lists the files without writing, and `--template-dir DIR` overrides built-in templates file by file. If any config is invalid nothing is written. The rendered incremental DAG reads like this (shortened):
 
 ```python
 @task
@@ -159,18 +189,18 @@ Needs Docker with Compose, `make` and `uv`.
 make demo
 ```
 
-This renders `examples/postgres` into `demo/dags`, starts Postgres 18 and Airflow 3.3.2 (the stock image, no Dockerfile), runs both DAGs for the logical date 2026-01-01 and prints what landed. Airflow is at http://127.0.0.1:8080 (demo auth, no login). `make down` stops the stack and deletes its volumes.
+This renders `examples/postgres` into `demo/dags`, starts Postgres 18 and Airflow 3.3.2 (the stock image, no Dockerfile), runs the three DAGs for the logical date 2026-01-01 and prints what landed. Airflow is at http://127.0.0.1:8080 (demo auth, no login). `make down` stops the stack and deletes its volumes.
 
 What you see, layer by layer:
 
-- Source: database `erp`, schema `sales`, read through the `erp_reader` role that can only SELECT there. `orders` has 1000 rows, one of them with a NULL `quantity`. `customers` has 200 rows with an `updated_at` column.
+- Source: database `erp`, schema `sales`, read through the `erp_reader` role that can only SELECT there. `orders` has 1000 rows, one of them with a NULL `quantity`. `customers` has 200 rows with an `updated_at` column. `products` has 100 rows with a `version_stamp` that a trigger sets from a sequence on every insert and update.
 - Landing: JSON Lines plus a manifest per run under `demo/data/landing/{source}/{table}/run_id=.../`.
-- Bronze: `bronze.erp__orders` has 999 rows, because the NULL `quantity` breaks the column contract (`quantity:integer!`) and `max_reject_ratio: 0.01` tolerates one in a thousand. `bronze.erp__customers` has 200 rows.
-- Ops: the rejected row is in `ops.ingestion_rejects` with its reason and payload, each run is a row in `ops.ingestion_runs`, and the customers watermark is in `ops.ingestion_state`.
+- Bronze: `bronze.erp__orders` has 999 rows, because the NULL `quantity` breaks the column contract (`quantity:integer!`) and `max_reject_ratio: 0.01` tolerates one in a thousand. `bronze.erp__customers` has 200 rows, and `bronze.erp__products` has 100, merged by the CDC DAG.
+- Ops: the rejected row is in `ops.ingestion_rejects` with its reason and payload, each run is a row in `ops.ingestion_runs`, and the customers watermark and the products sequence are in `ops.ingestion_state`.
 
 `make demo` can be run again. `demo/run_dag.py` runs each DAG through `DAG.test` with the run id fixed by the logical date (`manual__2026-01-01T00:00:00+00:00`), so a second run is a re-run of the same Airflow run: the DAGs replace their own rows and the counts do not change. (`airflow dags test` would name every run after the current time.)
 
-`make smoke` starts from an empty stack and asserts the whole scenario with `demo/smoke/*.sql`: the first run, the same run id executed a second time (counts, rejects and watermark unchanged, run executed again), a next day with no source change (the incremental run extracts 0 rows), and a source change (`demo/postgres/seed/mutate.sql`) followed by another day (1009 orders, 208 customers, because append keeps history). CI runs it in the `smoke` job.
+`make smoke` starts from an empty stack and asserts the whole scenario with `demo/smoke/*.sql`: the first run, the same run id executed a second time (counts, rejects and watermark unchanged, run executed again), a next day with no source change (the incremental and CDC runs extract 0 rows), and a source change (`demo/postgres/seed/mutate.sql`) followed by another day (1009 orders, 208 customers because append keeps history, and 102 products because the CDC merge applies 4 updates in place and adds 2). CI runs it in the `smoke` job.
 
 Everything in the demo is synthetic and the passwords in `.env.example` are for the local stack only.
 
@@ -188,13 +218,21 @@ The file name must be `{source}__{table}__{pattern}` in lowercase, for example `
 | source | schema_name | public (dbo for mssql) | Identifier |
 | extract | table | required | Identifier; lowercased it must be a valid segment |
 | extract | primary_key | required | A name or a list, unique, at least one |
-| extract | pattern | required | fullscan or incremental |
+| extract | pattern | required | fullscan, incremental or cdc |
 | extract | columns | none | Data contract: name, type, nullable. Without it the extract reads all columns |
-| extract | watermark | none | Required for incremental, forbidden for fullscan: column, type, initial_value |
+| extract | watermark | none | Required for incremental, forbidden otherwise: column, type, initial_value |
+| extract | cdc | none | Required for cdc, forbidden otherwise (see below) |
+| cdc | mechanism | generic | generic or rowversion (rowversion needs source_type mssql) |
+| cdc | sequence_column | required | Orders the changes; the rowversion column for rowversion |
+| cdc | sequence_type | integer | integer or datetime; leave it out for rowversion |
+| cdc | change_table | none | Table or view in the same schema to read instead of the table |
+| cdc | operation_column | none | Column whose values mark deletes |
+| cdc | delete_values | [D] | Non-empty when operation_column is set |
 | load | connection_id | warehouse | Target connection id |
 | load | target_schema | bronze | Identifier |
 | load | target_table | source__table | At most 59 characters |
-| load | write_mode | from the pattern | fullscan: overwrite (or append). incremental: append (or merge) |
+| load | write_mode | from the pattern | fullscan: overwrite (or append). incremental: append (or merge). cdc: merge |
+| load | merge_keys | the primary key | Only with write_mode merge; at least one column, unique |
 | load | max_reject_ratio | 0.0 | From 0 to 1 |
 | landing | root | /opt/airflow/data/landing | Non-empty path |
 | schedule | cron | @daily | null, a preset, or five cron fields |
@@ -209,13 +247,16 @@ Column types are integer, numeric, float, boolean, text, date, timestamp and tim
 
 With a column contract, the primary key and the watermark column must be listed in it. Primary key columns are stored as not null. A datetime watermark needs a timestamp, timestamptz or date column, and an integer watermark needs an integer column. The initial value must be an ISO datetime or an integer to match the watermark type. It is stored as text in one canonical form: an ISO datetime such as 2026-01-01T00:00:00, or an integer such as 5 (so 5, +05 and '5' are the same value). Columns and key names cannot start with `_ingest_`, including the primary key and the watermark column.
 
+With `cdc`, the sequence column (and the operation column when set) must be in the contract: an integer sequence needs an integer column, a datetime one a timestamp, timestamptz or date column, and a rowversion a text column. Merge keys must be in the contract too. A merge target has a primary key on the merge keys, so the merge keys and the sequence column are stored as not null.
+
 Presets for cron are @once, @hourly, @daily, @weekly, @monthly, @quarterly and @yearly. Five-field expressions accept ranges, steps, lists, and month and weekday names.
 
 ## Project structure
 
 ```text
 src/ingestion_toolkit/
-  cli/            main, add, validate, render and shared error output
+  cli/            main, add, init, validate, render and shared error output
+  scaffold/       the starter config `ingest init` writes
   models/         enums, the frozen config models and the render contexts (task.py)
   renderer.py     Jinja environment, context builder, atomic writes
   sql.py          quoted identifiers and the SQL text of the rendered DAGs
@@ -225,11 +266,11 @@ src/ingestion_toolkit/
   cron.py         schedule validator
   naming.py       identifier rules, DAG ids, bronze table names
   errors.py       error values and the one-line error format
-examples/postgres/  two ready configs, reproduced by tests/test_examples.py
+examples/         postgres/ (three configs) and mssql/ (one), reproduced by tests/test_examples.py
 compose.yaml      the demo stack; demo/ holds the seed data, smoke test and rendered DAGs
 scripts/          check_dag_imports.py, the DagBag gate CI runs
 tests/            unit, property-based, golden-file and CLI tests (tests/golden)
-docs/             design decisions and the implementation plan
+docs/             design decisions, the implementation plan, generated DAGs and the CDC contract
 ```
 
 ## Development

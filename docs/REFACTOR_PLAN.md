@@ -346,6 +346,11 @@ from DAG files; the wheel contains the templates; `ingest render examples --dry-
 Done: `make smoke` green locally (WSL) and in CI, including the same-run_id retry; goldens
 green; `ingest init` creates a valid project.
 
+Decision 18 split PR3 in two: the compose demo, seed, smoke and `smoke` job shipped first
+(GitHub PR #4), then CDC, merge loads, `add rdbms|mssql cdc`, `init` and
+`docs/cdc-contract.md` (GitHub PR #5). The `[PR3]` tags above cover both. PR1 and PR2 are
+GitHub PRs #1 and #3.
+
 ## 11. Risks and assumptions
 
 - Proven only by running them (PR2/PR3): `BaseHook.get_connection(id).get_hook()` on the SDK

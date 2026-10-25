@@ -9,7 +9,10 @@ INITIAL_VALUE = {{ dag.extract.initial_value | py }}
 
 
 def _bound_value(text: str) -> object:
-    return int(text) if BOUND_TYPE == "integer" else datetime.fromisoformat(text)
+    """The stored watermark as the driver parameter: a number, a datetime or rowversion hex."""
+    if BOUND_TYPE == "integer":
+        return int(text)
+    return datetime.fromisoformat(text) if BOUND_TYPE == "datetime" else text
 
 
 @task

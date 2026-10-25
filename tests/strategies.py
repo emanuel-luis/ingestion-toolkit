@@ -17,7 +17,7 @@ _OTHER_TYPES = [t.value for t in ColumnType]
 
 @st.composite
 def config_dicts(draw: st.DrawFn) -> dict[str, Any]:
-    pattern = draw(st.sampled_from(["fullscan", "incremental"]))
+    pattern = draw(st.sampled_from(["fullscan", "incremental", "cdc"]))
     names = draw(st.lists(segments, min_size=2, max_size=5, unique=True))
     key = names[0]
     extract: dict[str, Any] = {
@@ -36,19 +36,51 @@ def config_dicts(draw: st.DrawFn) -> dict[str, Any]:
                 if watermark_type == "datetime"
                 else draw(st.integers(-(2**63), 2**63 - 1))
             )
+    source_type = "rdbms"
+    seq_type = "integer"
+    if pattern == "cdc":
+        mechanism = draw(st.sampled_from(["generic", "rowversion"]))
+        cdc: dict[str, Any] = {"mechanism": mechanism, "sequence_column": names[1]}
+        if mechanism == "rowversion":
+            source_type = "mssql"
+        else:
+            seq_type = draw(st.sampled_from(["integer", "datetime"]))
+            cdc["sequence_type"] = seq_type
+            if draw(st.booleans()):
+                cdc["change_table"] = draw(segments)
+            if draw(st.booleans()):
+                cdc["operation_column"] = names[-1] if len(names) > 2 else "_op"
+                cdc["delete_values"] = draw(st.sampled_from([["D"], ["D", "X"]]))
+        extract["cdc"] = cdc
     if with_columns:
         columns = []
         for name in names:
             if pattern == "incremental" and name == names[1]:
                 type_ = draw(st.sampled_from(_TIMES)) if watermark_type == "datetime" else "integer"
+            elif pattern == "cdc" and name == names[1]:
+                if cdc["mechanism"] == "rowversion":
+                    type_ = "text"
+                else:
+                    type_ = draw(st.sampled_from(_TIMES)) if seq_type == "datetime" else "integer"
             else:
                 type_ = draw(st.sampled_from(_OTHER_TYPES))
             columns.append({"name": name, "type": type_, "nullable": draw(st.booleans())})
+        if pattern == "cdc" and cdc.get("operation_column") == "_op":
+            columns.append({"name": "_op", "type": "text", "nullable": True})
         extract["columns"] = columns
-    modes = ["overwrite", "append"] if pattern == "fullscan" else ["append", "merge"]
+    modes = {
+        "fullscan": ["overwrite", "append"],
+        "incremental": ["append", "merge"],
+        "cdc": ["merge"],
+    }[pattern]
     return {
         "version": 1,
-        "source": {"name": draw(segments), "database": "db", "schema_name": "s"},
+        "source": {
+            "name": draw(segments),
+            "source_type": source_type,
+            "database": "db",
+            "schema_name": "s",
+        },
         "extract": extract,
         "load": {
             "write_mode": draw(st.sampled_from(modes)),

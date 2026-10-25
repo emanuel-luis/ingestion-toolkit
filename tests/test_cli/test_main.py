@@ -20,7 +20,7 @@ def test_help_lists_the_commands() -> None:
     assert "add" in result.stdout
     assert "validate" in result.stdout
     assert "render" in result.stdout
-    assert "init" not in result.stdout  # arrives with the demo
+    assert "init" in result.stdout
 
 
 def test_no_args_shows_help() -> None:
@@ -29,4 +29,4 @@ def test_no_args_shows_help() -> None:
 
 
 def test_unknown_command_is_usage_error() -> None:
-    assert runner.invoke(app, ["init"]).exit_code == 2
+    assert runner.invoke(app, ["nope"]).exit_code == 2
