@@ -1,0 +1,133 @@
+
+
+OPS_DDL = [
+    "CREATE SCHEMA IF NOT EXISTS ops",
+    """
+    CREATE TABLE IF NOT EXISTS ops.ingestion_runs (
+        dag_id text NOT NULL,
+        run_id text NOT NULL,
+        source text NOT NULL,
+        source_table text NOT NULL,
+        target_table text NOT NULL,
+        pattern text NOT NULL,
+        status text NOT NULL,
+        watermark_from text,
+        watermark_to text,
+        rows_extracted bigint,
+        rows_loaded bigint,
+        rows_rejected bigint,
+        landing_path text,
+        started_at timestamptz,
+        extracted_at timestamptz,
+        finished_at timestamptz,
+        error text,
+        PRIMARY KEY (dag_id, run_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ops.ingestion_rejects (
+        dag_id text NOT NULL,
+        run_id text NOT NULL,
+        row_number bigint NOT NULL,
+        reason text NOT NULL,
+        payload jsonb,
+        rejected_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (dag_id, run_id, row_number)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ops.ingestion_state (
+        dag_id text PRIMARY KEY,
+        watermark text,
+        watermark_type text,
+        previous_watermark text,
+        run_id text,
+        updated_at timestamptz NOT NULL DEFAULT now()
+    )
+    """,
+]
+# One transaction; the advisory lock keeps DAGs started together from racing on CREATE.
+ENSURE_TABLES_SQL = [
+    "SELECT pg_advisory_xact_lock(727274)",
+    BRONZE_SCHEMA_SQL,
+    *OPS_DDL,
+]
+
+RUN_SQL = """
+INSERT INTO ops.ingestion_runs (
+    dag_id, run_id, source, source_table, target_table, pattern, status,
+    watermark_from, watermark_to, rows_extracted, rows_loaded, rows_rejected,
+    landing_path, started_at, extracted_at, finished_at, error
+) VALUES (
+    %(dag_id)s, %(run_id)s, %(source)s, %(source_table)s, %(target_table)s, %(pattern)s,
+    %(status)s, %(watermark_from)s, %(watermark_to)s, %(rows_extracted)s, %(rows_loaded)s,
+    %(rows_rejected)s, %(landing_path)s, %(started_at)s, %(extracted_at)s, %(finished_at)s,
+    %(error)s
+)
+ON CONFLICT (dag_id, run_id) DO UPDATE SET
+    status = EXCLUDED.status,
+    watermark_from = EXCLUDED.watermark_from,
+    watermark_to = EXCLUDED.watermark_to,
+    rows_extracted = EXCLUDED.rows_extracted,
+    rows_loaded = EXCLUDED.rows_loaded,
+    rows_rejected = EXCLUDED.rows_rejected,
+    landing_path = EXCLUDED.landing_path,
+    started_at = EXCLUDED.started_at,
+    extracted_at = EXCLUDED.extracted_at,
+    finished_at = EXCLUDED.finished_at,
+    error = EXCLUDED.error
+"""
+DELETE_REJECTS_SQL = "DELETE FROM ops.ingestion_rejects WHERE dag_id = %s AND run_id = %s"
+INSERT_REJECT_SQL = """
+INSERT INTO ops.ingestion_rejects (dag_id, run_id, row_number, reason, payload)
+VALUES (%s, %s, %s, %s, %s::jsonb)
+"""
+
+
+def _upsert_run(
+    cur: object,
+    manifest: dict,
+    status: str,
+    rows_loaded: int | None = None,
+    rows_rejected: int | None = None,
+    error: str | None = None,
+) -> None:
+    run_id = manifest["run_id"]
+    cur.execute(
+        RUN_SQL,
+        {
+            "dag_id": DAG_ID,
+            "run_id": run_id,
+            "source": SOURCE_NAME,
+            "source_table": SOURCE_TABLE,
+            "target_table": f"{BRONZE_SCHEMA}.{BRONZE_NAME}",
+            "pattern": PATTERN,
+            "status": status,
+            "watermark_from": manifest["watermark_from"],
+            "watermark_to": manifest["watermark_to"],
+            "rows_extracted": manifest["row_count"],
+            "rows_loaded": rows_loaded,
+            "rows_rejected": rows_rejected,
+            "landing_path": str(_partition_dir(run_id)),
+            "started_at": manifest["started_at"],
+            "extracted_at": manifest["extracted_at"],
+            "finished_at": None if status == "extracted" else _utcnow(),
+            "error": error,
+        },
+    )
+
+
+def _write_rejects(cur: object, run_id: str, rejects: list[tuple[int, str, str]]) -> None:
+    """Replace this run's rejects, so a retry never leaves stale rows."""
+    cur.execute(DELETE_REJECTS_SQL, (DAG_ID, run_id))
+    cur.executemany(INSERT_REJECT_SQL, [(DAG_ID, run_id, *reject) for reject in rejects])
+
+
+def _record_failure(
+    conn: object, manifest: dict, rejects: list[tuple[int, str, str]], error: str
+) -> None:
+    """After the load rolled back: the rejects and a failed run row, in their own transaction."""
+    with conn.cursor() as cur:
+        _write_rejects(cur, manifest["run_id"], rejects)
+        _upsert_run(cur, manifest, "failed", 0, len(rejects), error)
+    conn.commit()

@@ -32,7 +32,9 @@ def config_dicts(draw: st.DrawFn) -> dict[str, Any]:
         extract["watermark"] = {"column": wm_column, "type": watermark_type}
         if draw(st.booleans()):
             extract["watermark"]["initial_value"] = (
-                "2026-01-01T00:00:00" if watermark_type == "datetime" else draw(st.integers())
+                "2026-01-01T00:00:00"
+                if watermark_type == "datetime"
+                else draw(st.integers(-(2**63), 2**63 - 1))
             )
     if with_columns:
         columns = []

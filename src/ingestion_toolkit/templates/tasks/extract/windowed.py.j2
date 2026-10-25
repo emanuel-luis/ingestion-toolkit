@@ -1,0 +1,37 @@
+
+
+{{ dag.extract.extract_sql | py("EXTRACT_SQL") }}
+# {ph} is the source hook's placeholder, filled at run time
+{{ dag.extract.bounded_sql | py("BOUNDED_SQL") }}
+WATERMARK_COLUMN = {{ dag.extract.bound_column | py }}
+BOUND_TYPE = {{ dag.extract.bound_type | py }}
+INITIAL_VALUE = {{ dag.extract.initial_value | py }}
+
+
+def _bound_value(text: str) -> object:
+    return int(text) if BOUND_TYPE == "integer" else datetime.fromisoformat(text)
+
+
+@task
+def extract_to_landing() -> str:
+    """Copy rows above the stored watermark into this run's landing partition."""
+    run_id = get_current_context()["run_id"]
+    partition = _partition_dir(run_id)
+    started_at = _utcnow()
+    with closing(PostgresHook(postgres_conn_id=TARGET_CONN_ID).get_conn()) as target:
+        with target.cursor() as cur:
+            state = _read_state(cur)
+            _guard_order(cur, state, run_id)
+        lower = _lower_bound(state, run_id)
+        source = BaseHook.get_connection(SOURCE_CONN_ID).get_hook()
+        with closing(source.get_conn()) as connection, closing(connection.cursor()) as cursor:
+            if lower is None:
+                cursor.execute(EXTRACT_SQL)
+            else:
+                cursor.execute(BOUNDED_SQL.format(ph=source.placeholder), (_bound_value(lower),))
+            columns, row_count, high = _write_partition(partition, cursor, WATERMARK_COLUMN)
+        manifest = _write_manifest(partition, run_id, started_at, columns, row_count, lower, high)
+        with target.cursor() as cur:
+            _upsert_run(cur, manifest, "extracted")
+        target.commit()
+    return str(partition)

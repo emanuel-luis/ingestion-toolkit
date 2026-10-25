@@ -1,0 +1,5 @@
+
+
+def _prepare_target(cur: object, run_id: str) -> None:
+    """Overwrite: empty the table inside the transaction, so readers keep the old data."""
+    cur.execute(PREPARE_SQL)

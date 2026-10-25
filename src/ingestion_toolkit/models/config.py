@@ -21,6 +21,7 @@ from ingestion_toolkit.models.enums import (
 RESERVED_PREFIX = "_ingest_"
 MAX_TARGET_TABLE_LENGTH = 59
 _INT_RE = re.compile(r"[+-]?[0-9]+")
+_BIGINT_MIN, _BIGINT_MAX = -(2**63), 2**63 - 1  # bronze stores integer as bigint
 _IDENT_HINT = (
     "use letters, digits and underscores, start with a letter or underscore, at most 63 characters"
 )
@@ -179,6 +180,11 @@ class Watermark(_Model):
             ok = bool(_INT_RE.fullmatch(value)) if integer else bool(datetime.fromisoformat(value))
         except ValueError:
             ok = False
+        if ok and integer and not _BIGINT_MIN <= int(value) <= _BIGINT_MAX:
+            raise _fail(
+                f"watermark initial_value {value} is outside the bigint range",
+                f"use an integer from {_BIGINT_MIN} to {_BIGINT_MAX}",
+            )
         if not ok:
             raise _fail(
                 f"watermark initial_value {value!r} is not "

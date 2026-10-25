@@ -14,12 +14,13 @@ def test_version() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_help_lists_only_add_and_validate() -> None:
+def test_help_lists_the_commands() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "add" in result.stdout
     assert "validate" in result.stdout
-    assert "render" not in result.stdout
+    assert "render" in result.stdout
+    assert "init" not in result.stdout  # arrives with the demo
 
 
 def test_no_args_shows_help() -> None:
@@ -28,4 +29,4 @@ def test_no_args_shows_help() -> None:
 
 
 def test_unknown_command_is_usage_error() -> None:
-    assert runner.invoke(app, ["render"]).exit_code == 2
+    assert runner.invoke(app, ["init"]).exit_code == 2
