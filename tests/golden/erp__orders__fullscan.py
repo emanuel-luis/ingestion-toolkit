@@ -15,6 +15,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import DAG, BaseHook, get_current_context, task
 from airflow.sdk.exceptions import AirflowFailException
+from psycopg2 import DataError
 
 DAG_ID = "erp__orders__fullscan"
 DESCRIPTION = None
@@ -40,8 +41,6 @@ BRONZE_SCHEMA_SQL = 'CREATE SCHEMA IF NOT EXISTS "bronze"'
 BRONZE_SCHEMA = "bronze"
 BRONZE_NAME = "erp__orders"
 BRONZE_TABLE = '"bronze"."erp__orders"'
-PREPARE_SQL = 'DELETE FROM "bronze"."erp__orders"'
-DUPLICATE_SQL = 'SELECT 1 FROM "bronze"."erp__orders" WHERE "_ingest_run_id" = %s GROUP BY "id" HAVING count(*) > 1 LIMIT 1'
 PRIMARY_KEY = [
     "id",
 ]
@@ -100,6 +99,8 @@ def _watermark_text(column: str, value: object) -> str:
         return value.isoformat()
     if isinstance(value, int) and not isinstance(value, bool):
         return str(value)
+    if isinstance(value, bytes | bytearray | memoryview):  # a SQL Server rowversion
+        return "0x" + bytes(value).hex().upper()
     raise TypeError(f"watermark column {column!r}: unsupported value type {type(value).__name__}")
 
 
@@ -205,7 +206,11 @@ def _cast_boolean(value: object) -> bool:
 
 
 def _cast_text(value: object) -> str:
-    return value if isinstance(value, str) else json.dumps(value)
+    if isinstance(value, str):
+        if "\x00" in value:
+            raise ValueError("contains a NUL character, which PostgreSQL text cannot store")
+        return value
+    return json.dumps(value)
 
 
 def _cast_date(value: object) -> date:
@@ -235,11 +240,11 @@ CASTS = {
 def _column_specs(columns: list[str]) -> list[tuple[str, str, bool]]:
     """The (name, type, nullable) of each bronze column: the contract, else text."""
     if CONTRACT is not None:
-        return list(CONTRACT)
-    missing = [key for key in PRIMARY_KEY if key not in columns]
+        return [(n, kind, nullable and n not in REQUIRED_COLUMNS) for n, kind, nullable in CONTRACT]
+    missing = [key for key in REQUIRED_COLUMNS if key not in columns]
     if missing:
-        raise QualityError(f"primary key column(s) {missing} are not in the extracted columns")
-    return [(name, "text", name not in PRIMARY_KEY) for name in columns]
+        raise QualityError(f"key or sequence column(s) {missing} are not in the extracted columns")
+    return [(name, "text", name not in REQUIRED_COLUMNS) for name in columns]
 
 
 def _create_sql(specs: list[tuple[str, str, bool]]) -> str:
@@ -248,13 +253,18 @@ def _create_sql(specs: list[tuple[str, str, bool]]) -> str:
         for name, kind, nullable in specs
     ]
     definitions += ['"_ingest_run_id" text NOT NULL', '"_ingest_loaded_at" timestamptz NOT NULL']
+    definitions += EXTRA_DDL
     return f"CREATE TABLE IF NOT EXISTS {BRONZE_TABLE} ({', '.join(definitions)})"
 
 
 def _insert_sql(specs: list[tuple[str, str, bool]]) -> str:
-    names = ", ".join([*(_quote(name) for name, _, _ in specs), '"_ingest_run_id"'])
-    marks = ", ".join(["%s"] * (len(specs) + 1))
-    return f'INSERT INTO {BRONZE_TABLE} ({names}, "_ingest_loaded_at") VALUES ({marks}, now())'
+    extras = [_quote(name) for name in EXTRA_INSERT_COLUMNS]
+    names = ", ".join([*(_quote(name) for name, _, _ in specs), '"_ingest_run_id"', *extras])
+    marks = ", ".join(["%s"] * (len(specs) + 1 + len(extras)))
+    return (
+        f'INSERT INTO {BRONZE_TABLE} AS t ({names}, "_ingest_loaded_at") VALUES ({marks}, now())'
+        + _conflict_sql(specs)
+    )
 
 
 def _check_drift(cur: object, columns: list[str]) -> None:
@@ -290,6 +300,28 @@ def _validate_row(row: dict, specs: list[tuple[str, str, bool]]) -> tuple[list |
     return values, None
 
 
+def _reject_payload(row: dict) -> str:
+    """The rejected row as JSON text for jsonb, which refuses the escape for NUL: spell it out."""
+
+    def clean(value: object) -> object:
+        return value.replace("\x00", "\\x00") if isinstance(value, str) else value
+
+    return json.dumps({clean(k): clean(v) for k, v in row.items()})
+
+
+def _execute_batch(cur: object, statement: str, batch: list[tuple]) -> None:
+    """A value the database refuses (numeric overflow, date out of range) is a data error."""
+    try:
+        cur.executemany(statement, batch)
+    except DataError as error:
+        lines = str(error).strip().splitlines()
+        raise QualityError(
+            f"the database refused a value in a batch of {len(batch)} rows: "
+            f"{lines[0] if lines else type(error).__name__}. "
+            "Fix: widen the bronze column or correct the source value, then re-run"
+        ) from error
+
+
 def _insert_rows(
     cur: object,
     partition: Path,
@@ -303,28 +335,24 @@ def _insert_rows(
     loaded = 0
     with (partition / "part-00000.jsonl").open(encoding="utf-8") as handle:
         for number, line in enumerate(handle, start=1):
-            values, reason = _validate_row(json.loads(line), specs)
+            row = json.loads(line)
+            values, reason = _validate_row(row, specs)
             if reason is not None:
-                rejects.append((number, reason, line.strip()))
+                rejects.append((number, reason, _reject_payload(row)))
                 continue
-            batch.append((*values, run_id))
+            batch.append((*values, run_id, *_extra_values(row)))
             if len(batch) >= BATCH_SIZE:
-                cur.executemany(statement, batch)
+                _execute_batch(cur, statement, batch)
                 loaded += len(batch)
                 batch = []
     if batch:
-        cur.executemany(statement, batch)
+        _execute_batch(cur, statement, batch)
         loaded += len(batch)
     return loaded
 
 
 def _check_batch(cur: object, manifest: dict, loaded: int, rejected: int, run_id: str) -> None:
-    cur.execute(DUPLICATE_SQL, (run_id,))
-    if cur.fetchone() is not None:
-        raise QualityError(
-            f"duplicate primary key {PRIMARY_KEY} in the rows of run {run_id!r}. "
-            "Fix: check the source for repeated keys or correct primary_key in the config"
-        )
+    _check_duplicates(cur, run_id)
     total = manifest["row_count"]
     if loaded + rejected != total:
         raise QualityError(
@@ -514,6 +542,32 @@ def extract_to_landing() -> str:
             _upsert_run(cur, manifest, "extracted")
         target.commit()
     return str(partition)
+
+
+PREPARE_SQL = 'DELETE FROM "bronze"."erp__orders"'
+DUPLICATE_SQL = 'SELECT 1 FROM "bronze"."erp__orders" WHERE "_ingest_run_id" = %s GROUP BY "id" HAVING count(*) > 1 LIMIT 1'
+REQUIRED_COLUMNS = [
+    "id",
+]
+EXTRA_DDL = []
+EXTRA_INSERT_COLUMNS = []
+
+
+def _conflict_sql(specs: list[tuple[str, str, bool]]) -> str:
+    return ""
+
+
+def _extra_values(row: dict) -> tuple:
+    return ()
+
+
+def _check_duplicates(cur: object, run_id: str) -> None:
+    cur.execute(DUPLICATE_SQL, (run_id,))
+    if cur.fetchone() is not None:
+        raise QualityError(
+            f"duplicate primary key {PRIMARY_KEY} in the rows of run {run_id!r}. "
+            "Fix: check the source for repeated keys or correct primary_key in the config"
+        )
 
 
 def _prepare_target(cur: object, run_id: str) -> None:

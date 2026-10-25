@@ -33,6 +33,8 @@ def _watermark_text(column: str, value: object) -> str:
         return value.isoformat()
     if isinstance(value, int) and not isinstance(value, bool):
         return str(value)
+    if isinstance(value, bytes | bytearray | memoryview):  # a SQL Server rowversion
+        return "0x" + bytes(value).hex().upper()
     raise TypeError(f"watermark column {column!r}: unsupported value type {type(value).__name__}")
 
 

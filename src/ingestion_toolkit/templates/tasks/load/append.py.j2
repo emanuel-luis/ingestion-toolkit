@@ -1,5 +1,29 @@
 
 
+{{ dag.load.prepare_sql | py("PREPARE_SQL") }}
+{{ dag.load.duplicate_sql | py("DUPLICATE_SQL") }}
+REQUIRED_COLUMNS = {{ dag.load.required_columns | py }}
+EXTRA_DDL = []
+EXTRA_INSERT_COLUMNS = []
+
+
+def _conflict_sql(specs: list[tuple[str, str, bool]]) -> str:
+    return ""
+
+
+def _extra_values(row: dict) -> tuple:
+    return ()
+
+
+def _check_duplicates(cur: object, run_id: str) -> None:
+    cur.execute(DUPLICATE_SQL, (run_id,))
+    if cur.fetchone() is not None:
+        raise QualityError(
+            f"duplicate primary key {PRIMARY_KEY} in the rows of run {run_id!r}. "
+            "Fix: check the source for repeated keys or correct primary_key in the config"
+        )
+
+
 def _prepare_target(cur: object, run_id: str) -> None:
     """Append: drop only this run's rows, so a retry of the run never duplicates them."""
     cur.execute(PREPARE_SQL, (run_id,))

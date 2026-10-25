@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 
 from ingestion_toolkit.models.config import Config
 from ingestion_toolkit.renderer import Renderer
@@ -22,7 +22,6 @@ RENDERER = Renderer()
 @given(config_dicts())
 def test_valid_configs_render_to_parseable_deterministic_code(data: dict[str, Any]) -> None:
     config = Config.model_validate(data)
-    assume(config.load.write_mode != "merge")  # merge loads arrive with the CDC work
     path = Path(f"{config.dag_id}.yml")
     text = RENDERER.render(config, path)
     ast.parse(text)

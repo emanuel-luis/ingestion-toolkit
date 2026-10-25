@@ -11,7 +11,7 @@ class ExtractTaskContext:
 
     template: str
     extract_sql: str
-    bounded_sql: str | None = None  # incremental: SELECT with a {ph} lower bound
+    bounded_sql: str | None = None  # incremental and cdc: SELECT with a {ph} lower bound
     bound_column: str | None = None
     bound_type: str | None = None
     initial_value: str | None = None
@@ -32,6 +32,14 @@ class LoadTaskContext:
     duplicate_sql: str
     primary_key: tuple[str, ...]
     max_reject_ratio: float
+    # merge only
+    extra_ddl: tuple[str, ...] = ()
+    conflict_target_sql: str = ""
+    merge_guard_sql: str = ""
+    merge_keys: tuple[str, ...] = ()
+    required_columns: tuple[str, ...] = ()  # keys and sequence: never null in bronze
+    operation_column: str | None = None
+    delete_values: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
