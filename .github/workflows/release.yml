@@ -1,0 +1,108 @@
+name: release
+
+# PyPI publishing is not enabled yet (docs/DECISIONS.md #1): nothing here runs until a
+# version tag is pushed and the PyPI trusted publisher exists.
+# A version tag publishes to PyPI (after the "pypi" environment's reviewer approves);
+# a manual run is a dry run to TestPyPI. Both attest the sdist and the wheel (a GitHub
+# artifact attestation and PEP 740 on the index).
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and check the distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false, fetch-depth: 0 }  # origin/main, for the check below
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.12", enable-cache: false }
+      - name: Tag matches the version in pyproject.toml
+        if: github.event_name == 'push'
+        run: test "v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - name: Tagged commit is on main
+        if: github.event_name == 'push'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: CHANGELOG.md has the release's section
+        if: github.event_name == 'push'
+        run: grep -q "^## \[$(uv version --short)\]" CHANGELOG.md
+      - run: uv build
+      # Uploaded before anything else is installed: later steps cannot change what is published.
+      # A failing check below still fails the job, and the publish jobs need it.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: dist, path: dist/ }
+      - run: uvx twine==7.0.0 check --strict dist/*
+      - name: Smoke test (install each distribution, print the version)
+        run: |
+          for f in dist/*.whl dist/*.tar.gz; do
+            uv run --isolated --no-project --with "$f" ingest --version
+          done
+
+  test:
+    name: lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11", enable-cache: false }
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
+
+  # The publish jobs attest too: the OIDC token that signs stays out of `build`, which runs
+  # code installed from PyPI. Provenance names the workflow run, not the job, and the digests
+  # are those of the files uploaded. The dry run attests as well, so it exercises the step.
+  testpypi:
+    name: publish to TestPyPI (dry run)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/ingestion-toolkit
+    permissions:
+      id-token: write  # Trusted Publishing, and the Sigstore certificate of both attestations
+      attestations: write  # store the GitHub attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: dist, path: dist/ }
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with: { subject-path: "dist/*" }
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: publish to PyPI
+    if: github.event_name == 'push'
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ingestion-toolkit
+    permissions:
+      id-token: write  # Trusted Publishing, and the Sigstore certificate of both attestations
+      attestations: write  # store the GitHub attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with: { name: dist, path: dist/ }
+      # SLSA build provenance in the repository's attestations, before the upload: if it
+      # fails, nothing is published, and re-running the job retries both.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with: { subject-path: "dist/*" }
+      # Trusted Publishing: no token. PEP 740 attestations go up with the files.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

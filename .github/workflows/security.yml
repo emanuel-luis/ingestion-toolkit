@@ -1,0 +1,68 @@
+name: security
+
+# Supply-chain checks: known vulnerabilities in what uv.lock pins (pip-audit), the workflows
+# themselves (zizmor) and the lowest versions of the direct dependencies the package declares.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions: {}
+
+concurrency:
+  # per event: a push to main would otherwise cancel a weekly or manual run left pending
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    name: pip-audit (known vulnerabilities in uv.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11" }
+      # Every package uv.lock pins, for every group, with its hashes: pip-audit checks
+      # exactly that set and resolves nothing itself.
+      - run: uv export --frozen --all-groups --no-emit-project -o "$RUNNER_TEMP/locked.txt"
+      - run: uvx pip-audit==2.10.1 --disable-pip --progress-spinner off -r "$RUNNER_TEMP/locked.txt"
+
+  zizmor:
+    name: zizmor (GitHub Actions workflows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11" }
+      - name: Audit the workflows (fails on a finding of medium severity or higher)
+        run: uvx zizmor==1.30.1 --format=github --min-severity=medium .github/workflows
+        env:
+          # the online audits: impostor commits, known-vulnerable actions, stale refs
+          GH_TOKEN: ${{ github.token }}
+
+  lowest-direct:
+    name: lowest-direct (the declared dependency floors)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11", activate-environment: true }
+      # Resolved again, not from uv.lock's pins: the lowest version each direct dependency
+      # allows, the highest of everything else. uv rewrites uv.lock in this checkout only.
+      - run: uv sync --resolution lowest-direct
+      - run: pytest -q

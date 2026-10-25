@@ -1,0 +1,3 @@
+# golden files are compared byte for byte: no CRLF conversion on Windows checkouts
+* text=auto eol=lf
+*.png binary

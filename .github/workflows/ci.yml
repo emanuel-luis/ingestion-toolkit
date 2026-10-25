@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  # per event: a push to main would otherwise cancel a weekly or manual run left pending
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.11" }
+      - run: uv sync --locked
+      - run: uv run ruff check --output-format=github
+      - run: uv run ruff format --check
+      - run: uv run mypy
+
+  test:
+    name: test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every supported Python on the weekly and manual runs; the two ends otherwise.
+        python: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["3.11","3.12","3.13","3.14"]') || fromJSON('["3.11","3.14"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "${{ matrix.python }}" }
+      - run: uv sync --locked
+      - run: uv run pytest
+
+  build:
+    name: build (wheel, sdist, installed smoke)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with: { python-version: "3.12" }
+      - run: uv build
+      - run: uvx twine==7.0.0 check --strict dist/*
+      - name: The wheel ships the py.typed marker
+        run: uv run --no-project python -m zipfile -l dist/*.whl | grep -q 'ingestion_toolkit/py.typed'
+      # The installed wheel, without the project on the path: what a user gets.
+      - name: Smoke test (install the wheel, add a config, validate it)
+        run: |
+          wheel="$PWD/$(ls dist/*.whl)"
+          cd "$(mktemp -d)"
+          uv run --isolated --no-project --with "$wheel" ingest --version
+          uv run --isolated --no-project --with "$wheel" ingest add rdbms fullscan --source erp --database erp --schema sales --table orders --primary-key id --output-dir configs
+          uv run --isolated --no-project --with "$wheel" ingest validate configs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with: { name: dist, path: dist/ }
