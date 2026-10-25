@@ -51,7 +51,7 @@ CONTRACT = [
     ("id", "integer", False),
     ("customer_id", "integer", True),
     ("product_id", "integer", True),
-    ("quantity", "integer", True),
+    ("quantity", "integer", False),
     ("total", "numeric", True),
     ("order_date", "date", True),
 ]

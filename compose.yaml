@@ -1,0 +1,60 @@
+# Demo stack: a Postgres with a synthetic source (erp) and a target (warehouse), plus one
+# Airflow 3 container on the stock image that runs the DAGs rendered into demo/dags.
+# Demo only: simple auth with every user an admin, passwords from .env, ports on loopback.
+name: ingestion-toolkit
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?copy .env.example to .env}
+      ERP_READER_PASSWORD: ${ERP_READER_PASSWORD:?copy .env.example to .env}
+      WAREHOUSE_WRITER_PASSWORD: ${WAREHOUSE_WRITER_PASSWORD:?copy .env.example to .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      # Postgres 18 images keep the data directory under /var/lib/postgresql
+      - pgdata:/var/lib/postgresql
+      - ./demo/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./demo/postgres/seed:/seed:ro
+    healthcheck:
+      # TCP on 127.0.0.1 only answers once the init scripts are done and the real server is up
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow:
+    image: apache/airflow:3.3.2-python3.12
+    command: standalone
+    # Group 0 keeps the image's permissions working for any uid; AIRFLOW_UID lets Linux CI
+    # write the landing bind mount.
+    user: "${AIRFLOW_UID:-50000}:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?copy .env.example to .env}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+      AIRFLOW_CONN_ERP: '{"conn_type":"postgres","host":"postgres","port":5432,"schema":"erp","login":"erp_reader","password":"${ERP_READER_PASSWORD}"}'
+      AIRFLOW_CONN_WAREHOUSE: '{"conn_type":"postgres","host":"postgres","port":5432,"schema":"warehouse","login":"warehouse_writer","password":"${WAREHOUSE_WRITER_PASSWORD}"}'
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    volumes:
+      - ./demo/dags:/opt/airflow/dags:ro
+      - ./demo/data/landing:/opt/airflow/data/landing
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  pgdata:
