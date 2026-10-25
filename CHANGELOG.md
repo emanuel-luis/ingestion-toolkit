@@ -46,8 +46,26 @@ All notable changes to this project are documented here. The format follows
   with the run id fixed by the logical date, because `airflow dags test` names every run after
   the current time. Also `make render-demo`, `make up` and `make down`.
 
+- The CDC pattern and merge loads. `pattern: cdc` with a `cdc` block: `generic` (a sequence
+  column read with `WHERE seq > bound ORDER BY seq`, optionally from a change table) or
+  `rowversion` for SQL Server (`rv > bound AND rv < MIN_ACTIVE_ROWVERSION()`, watermark stored
+  as fixed-width hex). Merge targets get a primary key on `load.merge_keys` and an
+  `_ingest_deleted` flag; the upsert only lets a newer sequence replace an older one, so
+  replaying a window changes nothing. Incremental can merge too. Delete operations set the flag.
+- `ingest add rdbms cdc`, `ingest add mssql cdc` and `ingest init [DIR]`.
+- Examples `examples/postgres/erp__products__cdc.yml` and
+  `examples/mssql/erp_mssql__products__cdc.yml` with goldens, and `docs/cdc-contract.md`.
+- Demo: `sales.products` with a trigger-stamped `version_stamp`, mutations and smoke assertions
+  for the products CDC DAG.
+
 ### Changed
 
+- `ingest render` no longer refuses `write_mode: merge`.
+- The `dag-import` CI job renders and imports the postgres and mssql examples.
+- Text values containing a NUL character are rejected as contract rejects, and reject payloads
+  never contain the NUL escape (`jsonb` refuses it).
+- A `psycopg2.DataError` while inserting a batch (numeric overflow, date out of range) is a
+  quality failure (rollback, `failed` run row, no retry) instead of a retried crash.
 - The orders example now declares `quantity` as not null, so the demo's one NULL `quantity` is
   rejected by the column contract.
 - `tests/test_versions_in_sync.py` reads the Airflow image tag from `compose.yaml`.
