@@ -42,7 +42,9 @@ All notable changes to this project are documented here. The format follows
 - A docker compose demo (`make demo`): Postgres 18 with a synthetic `erp` source and a
   `warehouse` target, plus Airflow 3.3.2 on the stock image running the rendered DAGs. `make
   smoke` asserts a full scenario (first run, the same run id again, an empty next day, a source
-  change) and the new `smoke` CI job runs it. Also `make render-demo`, `make up` and `make down`.
+  change) and the new `smoke` CI job runs it. `demo/run_dag.py` runs a DAG through `DAG.test`
+  with the run id fixed by the logical date, because `airflow dags test` names every run after
+  the current time. Also `make render-demo`, `make up` and `make down`.
 
 ### Changed
 

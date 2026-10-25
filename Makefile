@@ -41,8 +41,8 @@ down:           ## stop the demo stack and delete its volumes
 	$(COMPOSE) down -v --remove-orphans
 
 demo: up        ## one command: start the stack, run both DAGs, show the result
-	$(COMPOSE) exec -T airflow airflow dags test erp__orders__fullscan 2026-01-01
-	$(COMPOSE) exec -T airflow airflow dags test erp__customers__incremental 2026-01-01
+	$(COMPOSE) exec -T airflow python - erp__orders__fullscan 2026-01-01 < demo/run_dag.py
+	$(COMPOSE) exec -T airflow python - erp__customers__incremental 2026-01-01 < demo/run_dag.py
 	$(COMPOSE) exec -T postgres psql -U postgres -d warehouse -f - < demo/summary.sql
 	@echo "Airflow UI: http://127.0.0.1:$${AIRFLOW_PORT:-8080} (demo auth: no login needed)"
 
