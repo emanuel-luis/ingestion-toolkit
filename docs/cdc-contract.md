@@ -38,6 +38,10 @@ load:
   identify the entity, not the change.
 - A sequence column that increases with every change to a row: a bigint from a database
   sequence set by a trigger, a log sequence number, or an `updated_at` that is always touched.
+- Two changes to the same key must not share a sequence value. Ties are applied in the order the
+  rows arrive, so an update and a delete of one key in the same transaction, both stamped with
+  that transaction's `now()`, can end with the update winning. A database sequence or a log
+  position is unique; a transaction timestamp is not.
 - The sequence column must be in the data contract when there is one, with a compatible type:
   `integer` for an integer sequence, `timestamp`, `timestamptz` or `date` for a datetime one.
   The extract reads exactly the columns of the contract, so list the operation column too.
@@ -50,7 +54,9 @@ load:
   column: the driver returns it as bytes and the landing file stores it as `0x...` hex.
 - The reader needs only SELECT. `MIN_ACTIVE_ROWVERSION()` is available to any login.
 - Deletes are not visible in the table. Use a soft-delete column as the operation column, or do
-  not use this mechanism for tables that delete rows.
+  not use this mechanism for tables that delete rows. `ingest add mssql cdc` has no
+  `--operation-column` option: set `extract.cdc.operation_column` and `delete_values` in the
+  config file, then run `ingest validate`.
 
 This path is covered by a golden file and the DagBag import check only: the demo has no SQL
 Server.
