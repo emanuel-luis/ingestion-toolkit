@@ -15,6 +15,7 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import DAG, BaseHook, get_current_context, task
 from airflow.sdk.exceptions import AirflowFailException
+from psycopg2 import DataError
 {% include "constants.py.j2" %}
 {% for name in dag.helper_templates %}
 {% include name %}

@@ -1,4 +1,4 @@
-"""``ingest add rdbms fullscan|incremental``: write one validated config file."""
+"""``ingest add rdbms fullscan|incremental|cdc`` and ``mssql cdc``: write one validated config."""
 
 from __future__ import annotations
 
@@ -13,13 +13,21 @@ from ingestion_toolkit.columns import parse_columns_spec
 from ingestion_toolkit.config_io import Format, validation_errors, write_config
 from ingestion_toolkit.errors import ConfigError
 from ingestion_toolkit.models.config import Config
-from ingestion_toolkit.models.enums import Pattern, WatermarkType, WriteMode
+from ingestion_toolkit.models.enums import (
+    Pattern,
+    SequenceType,
+    SourceType,
+    WatermarkType,
+    WriteMode,
+)
 
 app = typer.Typer(help="Write a new config file.", no_args_is_help=True)
 rdbms = typer.Typer(
     help="Relational sources read through an Airflow DbApiHook.", no_args_is_help=True
 )
+mssql = typer.Typer(help="SQL Server sources.", no_args_is_help=True)
 app.add_typer(rdbms, name="rdbms")
+app.add_typer(mssql, name="mssql")
 
 _ARGS = Path("<arguments>")
 
@@ -27,7 +35,7 @@ Source = Annotated[str, typer.Option(help="Source system name, a lowercase segme
 Database = Annotated[str, typer.Option(help="Database name in the source.")]
 Table = Annotated[str, typer.Option(help="Source table name.")]
 PrimaryKey = Annotated[str, typer.Option(help="Primary key columns, comma-separated.")]
-Schema = Annotated[str | None, typer.Option(help="Source schema. Default: public.")]
+Schema = Annotated[str | None, typer.Option(help="Source schema. Default: public (dbo for mssql).")]
 ConnectionId = Annotated[
     str | None, typer.Option(help="Source connection id. Default: the source name.")
 ]
@@ -43,6 +51,9 @@ Mode = Annotated[
 ]
 RejectRatio = Annotated[
     float | None, typer.Option(help="Share of rejected rows tolerated, 0 to 1. Default: 0.")
+]
+MergeKeys = Annotated[
+    str | None, typer.Option(help="Merge key columns, comma-separated. Default: the primary key.")
 ]
 Cron = Annotated[str | None, typer.Option(help="Schedule. Default: @daily.")]
 StartDate = Annotated[str | None, typer.Option(help="First schedule date. Default: 2026-01-01.")]
@@ -84,6 +95,9 @@ def _add(
     output_dir: Path,
     fmt: Format,
     force: bool,
+    source_type: SourceType | None = None,
+    cdc: dict[str, Any] | None = None,
+    merge_keys: str | None = None,
 ) -> None:
     try:
         parsed = parse_columns_spec(columns) if columns is not None else None
@@ -98,6 +112,7 @@ def _add(
         "source": _clean(
             {
                 "name": source,
+                "source_type": source_type,
                 "connection_id": connection_id,
                 "database": database,
                 "schema_name": schema,
@@ -110,12 +125,14 @@ def _add(
                 "pattern": pattern.value,
                 "columns": parsed,
                 "watermark": watermark,
+                "cdc": cdc,
             }
         ),
         "load": _clean(
             {
                 "connection_id": target_connection_id,
                 "write_mode": write_mode,
+                "merge_keys": _split(merge_keys) if merge_keys is not None else None,
                 "max_reject_ratio": max_reject_ratio,
             }
         ),
@@ -265,4 +282,127 @@ def incremental(
         output_dir=output_dir,
         fmt=fmt,
         force=force,
+    )
+
+
+@rdbms.command("cdc")
+def rdbms_cdc(
+    *,
+    source: Source,
+    database: Database,
+    table: Table,
+    primary_key: PrimaryKey,
+    sequence_column: Annotated[str, typer.Option(help="Column that orders the changes.")],
+    sequence_type: Annotated[
+        SequenceType | None, typer.Option(help="Type of the sequence column. Default: integer.")
+    ] = None,
+    change_table: Annotated[
+        str | None,
+        typer.Option(help="Table or view holding the changes, in the same schema. Default: table."),
+    ] = None,
+    operation_column: Annotated[
+        str | None, typer.Option(help="Column that says insert, update or delete.")
+    ] = None,
+    delete_values: Annotated[
+        str | None,
+        typer.Option(help="Operation values that mean delete, comma-separated. Default: D."),
+    ] = None,
+    merge_keys: MergeKeys = None,
+    schema: Schema = None,
+    connection_id: ConnectionId = None,
+    target_connection_id: TargetConnectionId = None,
+    columns: Columns = None,
+    max_reject_ratio: RejectRatio = None,
+    cron: Cron = None,
+    start_date: StartDate = None,
+    tags: Tags = None,
+    owner: Owner = None,
+    description: Description = None,
+    output_dir: OutputDir = Path("configs"),
+    fmt: FormatOpt = Format.YAML,
+    force: Force = False,
+) -> None:
+    """Merge a change feed ordered by a sequence column into bronze."""
+    _add(
+        Pattern.CDC,
+        source=source,
+        database=database,
+        schema=schema,
+        connection_id=connection_id,
+        table=table,
+        primary_key=primary_key,
+        columns=columns,
+        watermark=None,
+        target_connection_id=target_connection_id,
+        write_mode=None,
+        max_reject_ratio=max_reject_ratio,
+        cron=cron,
+        start_date=start_date,
+        tags=tags,
+        owner=owner,
+        description=description,
+        output_dir=output_dir,
+        fmt=fmt,
+        force=force,
+        cdc=_clean(
+            {
+                "sequence_column": sequence_column,
+                "sequence_type": sequence_type,
+                "change_table": change_table,
+                "operation_column": operation_column,
+                "delete_values": _split(delete_values) if delete_values is not None else None,
+            }
+        ),
+        merge_keys=merge_keys,
+    )
+
+
+@mssql.command("cdc")
+def mssql_cdc(
+    *,
+    source: Source,
+    database: Database,
+    table: Table,
+    primary_key: PrimaryKey,
+    rowversion_column: Annotated[str, typer.Option(help="The table's rowversion column.")],
+    merge_keys: MergeKeys = None,
+    schema: Schema = None,
+    connection_id: ConnectionId = None,
+    target_connection_id: TargetConnectionId = None,
+    columns: Columns = None,
+    max_reject_ratio: RejectRatio = None,
+    cron: Cron = None,
+    start_date: StartDate = None,
+    tags: Tags = None,
+    owner: Owner = None,
+    description: Description = None,
+    output_dir: OutputDir = Path("configs"),
+    fmt: FormatOpt = Format.YAML,
+    force: Force = False,
+) -> None:
+    """Merge rows changed since the last rowversion, never past an open transaction."""
+    _add(
+        Pattern.CDC,
+        source=source,
+        database=database,
+        schema=schema,
+        connection_id=connection_id,
+        table=table,
+        primary_key=primary_key,
+        columns=columns,
+        watermark=None,
+        target_connection_id=target_connection_id,
+        write_mode=None,
+        max_reject_ratio=max_reject_ratio,
+        cron=cron,
+        start_date=start_date,
+        tags=tags,
+        owner=owner,
+        description=description,
+        output_dir=output_dir,
+        fmt=fmt,
+        force=force,
+        source_type=SourceType.MSSQL,
+        cdc={"mechanism": "rowversion", "sequence_column": rowversion_column},
+        merge_keys=merge_keys,
     )

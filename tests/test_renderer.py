@@ -58,12 +58,72 @@ def test_context_is_deterministic() -> None:
     assert build_dag_context(make(), "x.yml") == build_dag_context(make(), "x.yml")
 
 
-def test_merge_is_refused_with_a_fix() -> None:
-    config = make("incremental", load={"write_mode": "merge"})
-    with pytest.raises(RenderError) as info:
-        Renderer().render(config, Path("configs/erp__orders__incremental.yml"))
-    assert info.value.error.hint == "use write_mode append"
-    assert info.value.error.path == "configs/erp__orders__incremental.yml"
+def make_cdc(mechanism: str = "generic", **cdc: Any) -> Config:
+    extra: dict[str, Any] = {"source_type": "mssql"} if mechanism == "rowversion" else {}
+    return Config.model_validate(
+        {
+            "version": 1,
+            "source": {"name": "erp", "database": "erp", **extra},
+            "extract": {
+                "table": "orders",
+                "primary_key": "id",
+                "pattern": "cdc",
+                "cdc": {"mechanism": mechanism, "sequence_column": "seq", **cdc},
+            },
+        }
+    )
+
+
+def test_incremental_merge_context() -> None:
+    ctx = build_dag_context(make("incremental", load={"write_mode": "merge"}), "x.yml")
+    assert ctx.load.template == "tasks/load/merge.py.j2"
+    assert ctx.load.merge_keys == ("id",)
+    assert ctx.load.required_columns == ("id", "updated_at")
+    assert ctx.load.conflict_target_sql == '("id")'
+    assert (
+        ctx.load.merge_guard_sql
+        == 't."updated_at"::timestamptz <= EXCLUDED."updated_at"::timestamptz'
+    )
+    assert ctx.load.prepare_sql == "" and ctx.load.duplicate_sql == ""
+    assert ctx.load.extra_ddl[0] == '"_ingest_deleted" boolean NOT NULL DEFAULT false'
+    assert ctx.load.extra_ddl[1] == 'PRIMARY KEY ("id")'
+
+
+def test_generic_cdc_context() -> None:
+    config = make_cdc(
+        change_table="orders_changes", operation_column="op", delete_values=["D", "X"]
+    )
+    ctx = build_dag_context(config, "x.yml")
+    assert ctx.extract.template == "tasks/extract/windowed.py.j2"
+    assert ctx.helper_templates[-1] == "helpers/state.py.j2"
+    assert ctx.extract.bound_type == "integer" and ctx.extract.initial_value is None
+    assert ctx.extract.bounded_sql == (
+        'SELECT * FROM "erp"."public"."orders_changes" WHERE "seq" > {ph} ORDER BY "seq"'
+    )
+    assert ctx.extract.extract_sql.endswith('ORDER BY "seq"')
+    assert ctx.load.operation_column == "op" and ctx.load.delete_values == ("D", "X")
+    assert ctx.load.merge_guard_sql == 't."seq"::bigint <= EXCLUDED."seq"::bigint'
+
+
+def test_rowversion_context() -> None:
+    ctx = build_dag_context(make_cdc("rowversion"), "x.yml")
+    assert ctx.extract.bound_type == "rowversion"
+    assert ctx.extract.bounded_sql is not None
+    assert "> CONVERT(binary(8), {ph}, 1) AND" in ctx.extract.bounded_sql
+    assert ctx.extract.bounded_sql.count("MIN_ACTIVE_ROWVERSION()") == 1
+    assert 'WHERE "seq" < MIN_ACTIVE_ROWVERSION()' in ctx.extract.extract_sql
+    assert ctx.load.merge_guard_sql == 't."seq" COLLATE "C" <= EXCLUDED."seq" COLLATE "C"'
+
+
+def test_merge_render_is_valid_python() -> None:
+    for config in (
+        make_cdc(),
+        make_cdc("rowversion"),
+        make("incremental", load={"write_mode": "merge"}),
+    ):
+        text = Renderer().render(config, Path("x.yml"))
+        ast.parse(text)
+        assert "ON CONFLICT" in text and "_ingest_deleted" in text
 
 
 def test_render_is_valid_python_and_deterministic() -> None:
@@ -129,10 +189,13 @@ def test_missing_template_is_a_render_error(tmp_path: Path) -> None:
 
 
 def test_bulk_render_is_all_or_nothing(tmp_path: Path) -> None:
+    broken = tmp_path / "templates" / "tasks" / "extract"
+    broken.mkdir(parents=True)
+    (broken / "windowed.py.j2").write_text("X = (\n", encoding="utf-8")  # only incremental uses it
     good = (Path("erp__orders__fullscan.yml"), make())
-    bad = (Path("erp__orders__incremental.yml"), make("incremental", load={"write_mode": "merge"}))
+    bad = (Path("erp__orders__incremental.yml"), make("incremental"))
     with pytest.raises(ConfigFailure) as info:
-        render_all([good, bad], tmp_path / "out")
+        render_all([good, bad], tmp_path / "out", tmp_path / "templates")
     assert [e.path for e in info.value.errors] == ["erp__orders__incremental.yml"]
     assert not (tmp_path / "out").exists()
 

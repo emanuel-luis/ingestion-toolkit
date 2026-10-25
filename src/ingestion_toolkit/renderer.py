@@ -22,6 +22,7 @@ _LINE_LENGTH = 100
 _LOAD_TEMPLATES = {
     WriteMode.OVERWRITE: "tasks/load/overwrite.py.j2",
     WriteMode.APPEND: "tasks/load/append.py.j2",
+    WriteMode.MERGE: "tasks/load/merge.py.j2",
 }
 _HELPERS = (
     "helpers/landing.py.j2",
@@ -73,22 +74,18 @@ def py_literal(value: Any, name: str | None = None, nested: bool = False) -> str
 
 
 def build_dag_context(config: Config, config_name: str) -> DagContext:
-    """Pure: the template context for one config. Raises ValueError for unsupported modes."""
+    """Pure: the template context for one config."""
     extract, load = config.extract, config.load
-    if load.write_mode not in _LOAD_TEMPLATES:
-        raise ValueError(
-            f"write_mode {load.write_mode} cannot be rendered yet. Fix: use write_mode append"
-        )
     select = sql.select_sql(config)
     mark = extract.watermark
-    if extract.pattern is Pattern.INCREMENTAL and mark is not None:
+    if extract.pattern is not Pattern.FULLSCAN:
         extract_ctx = ExtractTaskContext(
             template="tasks/extract/windowed.py.j2",
             extract_sql=select,
             bounded_sql=sql.bounded_select_sql(config),
-            bound_column=mark.column,
-            bound_type=mark.type.value,
-            initial_value=mark.initial_value,
+            bound_column=sql.sequence_column(config),
+            bound_type=sql.sequence_kind(config),
+            initial_value=mark.initial_value if mark is not None else None,
         )
         helpers = (*_HELPERS, "helpers/state.py.j2")
     else:
@@ -102,6 +99,18 @@ def build_dag_context(config: Config, config_name: str) -> DagContext:
         else None
     )
     table = extract.table.lower()
+    assert load.write_mode is not None  # filled in by Config
+    merge = load.write_mode is WriteMode.MERGE
+    required = dict.fromkeys(
+        [
+            *extract.primary_key,
+            *(load.merge_keys or ()),
+            *filter(None, [sql.sequence_column(config)]),
+        ]
+        if merge
+        else extract.primary_key
+    )
+    cdc = extract.cdc
     load_ctx = LoadTaskContext(
         template=_LOAD_TEMPLATES[load.write_mode],
         bronze_schema_sql=sql.create_schema_sql(config),
@@ -110,10 +119,17 @@ def build_dag_context(config: Config, config_name: str) -> DagContext:
         bronze_name=load.target_table or "",
         columns=columns,
         pg_types=dict(sql.PG_TYPES),
-        prepare_sql=sql.prepare_sql(config),
-        duplicate_sql=sql.duplicate_sql(config),
+        prepare_sql="" if merge else sql.prepare_sql(config),
+        duplicate_sql="" if merge else sql.duplicate_sql(config),
         primary_key=extract.primary_key,
         max_reject_ratio=load.max_reject_ratio,
+        extra_ddl=sql.merge_extra_ddl(config),
+        conflict_target_sql=sql.conflict_target_sql(config) if merge else "",
+        merge_guard_sql=sql.merge_guard_sql(config) if merge else "",
+        merge_keys=load.merge_keys or (),
+        required_columns=tuple(required),
+        operation_column=cdc.operation_column if cdc is not None else None,
+        delete_values=cdc.delete_values if cdc is not None and cdc.operation_column else (),
     )
     schedule = config.schedule
     tags = dict.fromkeys(
@@ -161,11 +177,7 @@ class Renderer:
 
     def render(self, config: Config, config_path: Path) -> str:
         """Render one config. Raises RenderError, naming the config and the template."""
-        try:
-            context = build_dag_context(config, config_path.name)
-        except ValueError as exc:
-            message, _, hint = str(exc).partition(". Fix: ")
-            raise _fail(config_path, "load.write_mode", message, hint) from exc
+        context = build_dag_context(config, config_path.name)
         try:
             text = self.env.get_template(_BASE_TEMPLATE).render(dag=context)
         except jinja2.TemplateNotFound as exc:
