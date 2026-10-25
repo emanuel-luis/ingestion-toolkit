@@ -79,6 +79,18 @@ def test_template_dir_override(tmp_path: Path) -> None:
     assert "# custom" in (out / "erp__orders__fullscan.py").read_text(encoding="utf-8")
 
 
+def test_unwritable_output_is_one_error_line(tmp_path: Path) -> None:
+    occupied = tmp_path / "out"
+    occupied.write_text("a file where the output directory should be\n", encoding="utf-8")
+    result = runner.invoke(app, ["render", str(EXAMPLES), "--output-dir", str(occupied)])
+    assert result.exit_code == 1
+    lines = result.stderr.strip().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith(f"error: {occupied.as_posix()}: output: cannot write")
+    assert lines[0].endswith(". Fix: check the directory")
+    assert result.stdout.strip() == "0 rendered, 1 failed"
+
+
 def test_usage_error_is_exit_2() -> None:
     assert runner.invoke(app, ["render", "--bogus"]).exit_code == 2
 
