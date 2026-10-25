@@ -17,6 +17,7 @@ RENDERER = Renderer()
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(600)  # 300 renders: ~40 s idle, over 60 s on a loaded machine
 @settings(max_examples=300)
 @given(config_dicts())
 def test_valid_configs_render_to_parseable_deterministic_code(data: dict[str, Any]) -> None:
