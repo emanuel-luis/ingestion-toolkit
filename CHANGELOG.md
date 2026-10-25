@@ -19,3 +19,12 @@ All notable changes to this project are documented here. The format follows
 - `--version`, `python -m ingestion_toolkit` and a typed package (`py.typed`).
 - Examples in `examples/postgres/`, rebuilt from the documented commands by a test.
 - Unit, property-based (Hypothesis) and CLI tests.
+- CI (lint, tests on Python 3.11 to 3.14, wheel build smoke test), a security workflow
+  (pip-audit, zizmor, lowest-direct resolution) and a tag-driven release workflow that is not
+  enabled yet.
+
+### Notes
+
+- `watermark.initial_value` is stored as text: a canonical ISO datetime or a canonical integer.
+- A section such as `load` that is present but not a mapping is a validation error, not a
+  silent default.
