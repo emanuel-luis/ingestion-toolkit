@@ -28,7 +28,8 @@ All notable changes to this project are documented here. The format follows
   Lines per run with a manifest, bronze is typed from the column contract, rows that break it go
   to `ops.ingestion_rejects`, and run metadata and the incremental watermark live in the `ops`
   schema, written in the same transaction as the load. Options: `--output-dir`, `--template-dir`,
-  `--dry-run`. A bulk render is all or nothing.
+  `--dry-run`. If any config is invalid or fails to render, nothing is written; each file is
+  written atomically.
 - Rendered loads refuse a stale extract: clearing only `load_bronze` of an older run after a
   later run succeeded fails with a hint to re-run the whole DAG run, instead of duplicating rows
   or moving the watermark back.
