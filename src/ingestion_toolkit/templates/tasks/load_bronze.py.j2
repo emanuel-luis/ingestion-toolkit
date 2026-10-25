@@ -1,0 +1,26 @@
+
+
+@task
+def load_bronze() -> dict:
+    """Load this run's landing partition into bronze in one transaction."""
+    run_id = get_current_context()["run_id"]
+    manifest = _read_manifest(_partition_dir(run_id))
+    rejects: list[tuple[int, str, str]] = []
+    with closing(PostgresHook(postgres_conn_id=TARGET_CONN_ID).get_conn()) as conn:
+        try:
+            with conn.cursor() as cur:
+                specs = _column_specs(manifest["columns"])
+                cur.execute(_create_sql(specs))
+                _check_drift(cur, manifest["columns"])
+                _prepare_target(cur, run_id)
+                loaded = _insert_rows(cur, _partition_dir(run_id), specs, run_id, rejects)
+                _check_batch(cur, manifest, loaded, len(rejects), run_id)
+                _write_rejects(cur, run_id, rejects)
+                _advance_state(cur, manifest)
+                _upsert_run(cur, manifest, "success", loaded, len(rejects))
+            conn.commit()
+        except QualityError as error:
+            conn.rollback()
+            _record_failure(conn, manifest, rejects, str(error))
+            raise AirflowFailException(str(error)) from error
+    return {"run_id": run_id, "rows_loaded": loaded, "rows_rejected": len(rejects)}

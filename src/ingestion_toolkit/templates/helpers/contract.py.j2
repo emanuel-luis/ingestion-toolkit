@@ -1,0 +1,181 @@
+
+
+class QualityError(Exception):
+    """A data problem: the load rolls back and the run fails without retrying."""
+
+
+def _quote(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _cast_integer(value: object) -> int:
+    if isinstance(value, bool):
+        raise TypeError("boolean is not an integer")
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("not a whole number")
+        value = int(value)
+    number = int(value)
+    if not -(2**63) <= number < 2**63:
+        raise ValueError("outside the bigint range")
+    return number
+
+
+def _cast_numeric(value: object) -> Decimal:
+    number = Decimal(value if isinstance(value, str) else str(value))
+    if not number.is_finite():
+        raise ValueError("not a finite number")
+    return number
+
+
+def _cast_float(value: object) -> float:
+    if isinstance(value, bool):
+        raise TypeError("boolean is not a float")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("not a finite number")
+    return number
+
+
+def _cast_boolean(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "t", "1"):
+        return True
+    if text in ("false", "f", "0"):
+        return False
+    raise ValueError("not a boolean")
+
+
+def _cast_text(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _cast_date(value: object) -> date:
+    if not isinstance(value, str):
+        raise TypeError("expected an ISO date string")
+    return date.fromisoformat(value)
+
+
+def _cast_datetime(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise TypeError("expected an ISO datetime string")
+    return datetime.fromisoformat(value)
+
+
+CASTS = {
+    "integer": _cast_integer,
+    "numeric": _cast_numeric,
+    "float": _cast_float,
+    "boolean": _cast_boolean,
+    "text": _cast_text,
+    "date": _cast_date,
+    "timestamp": _cast_datetime,
+    "timestamptz": _cast_datetime,
+}
+
+
+def _column_specs(columns: list[str]) -> list[tuple[str, str, bool]]:
+    """The (name, type, nullable) of each bronze column: the contract, else text."""
+    if CONTRACT is not None:
+        return list(CONTRACT)
+    missing = [key for key in PRIMARY_KEY if key not in columns]
+    if missing:
+        raise QualityError(f"primary key column(s) {missing} are not in the extracted columns")
+    return [(name, "text", name not in PRIMARY_KEY) for name in columns]
+
+
+def _create_sql(specs: list[tuple[str, str, bool]]) -> str:
+    definitions = [
+        f"{_quote(name)} {PG_TYPES[kind]}{'' if nullable else ' NOT NULL'}"
+        for name, kind, nullable in specs
+    ]
+    definitions += ['"_ingest_run_id" text NOT NULL', '"_ingest_loaded_at" timestamptz NOT NULL']
+    return f"CREATE TABLE IF NOT EXISTS {BRONZE_TABLE} ({', '.join(definitions)})"
+
+
+def _insert_sql(specs: list[tuple[str, str, bool]]) -> str:
+    names = ", ".join([*(_quote(name) for name, _, _ in specs), '"_ingest_run_id"'])
+    marks = ", ".join(["%s"] * (len(specs) + 1))
+    return f'INSERT INTO {BRONZE_TABLE} ({names}, "_ingest_loaded_at") VALUES ({marks}, now())'
+
+
+def _check_drift(cur: object, columns: list[str]) -> None:
+    """The extracted columns must be the bronze table's columns."""
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s",
+        (BRONZE_SCHEMA, BRONZE_NAME),
+    )
+    existing = {name for (name,) in cur.fetchall() if not name.startswith("_ingest_")}
+    added, dropped = sorted(set(columns) - existing), sorted(existing - set(columns))
+    if added or dropped:
+        raise QualityError(
+            f"schema drift: new in the source {added}, missing from the source {dropped}. "
+            "Fix: alter the bronze table or change extract.columns, then re-run"
+        )
+
+
+def _validate_row(row: dict, specs: list[tuple[str, str, bool]]) -> tuple[list | None, str | None]:
+    """Not-null checks, then one cast per column. Returns (values, None) or (None, reason)."""
+    values = []
+    for name, kind, nullable in specs:
+        value = row.get(name)
+        if value is None:
+            if not nullable:
+                return None, f"column {name!r} is null but not nullable"
+            values.append(None)
+            continue
+        try:
+            values.append(CASTS[kind](value))
+        except (ValueError, TypeError, ArithmeticError):
+            return None, f"column {name!r}: cannot cast {value!r:.80} to {kind}"
+    return values, None
+
+
+def _insert_rows(
+    cur: object,
+    partition: Path,
+    specs: list[tuple[str, str, bool]],
+    run_id: str,
+    rejects: list[tuple[int, str, str]],
+) -> int:
+    """Insert the valid rows in batches. Rows failing the contract are added to rejects."""
+    statement = _insert_sql(specs)
+    batch: list[tuple] = []
+    loaded = 0
+    with (partition / "part-00000.jsonl").open(encoding="utf-8") as handle:
+        for number, line in enumerate(handle, start=1):
+            values, reason = _validate_row(json.loads(line), specs)
+            if reason is not None:
+                rejects.append((number, reason, line.strip()))
+                continue
+            batch.append((*values, run_id))
+            if len(batch) >= BATCH_SIZE:
+                cur.executemany(statement, batch)
+                loaded += len(batch)
+                batch = []
+    if batch:
+        cur.executemany(statement, batch)
+        loaded += len(batch)
+    return loaded
+
+
+def _check_batch(cur: object, manifest: dict, loaded: int, rejected: int, run_id: str) -> None:
+    cur.execute(DUPLICATE_SQL, (run_id,))
+    if cur.fetchone() is not None:
+        raise QualityError(
+            f"duplicate primary key {PRIMARY_KEY} in the rows of run {run_id!r}. "
+            "Fix: check the source for repeated keys or correct primary_key in the config"
+        )
+    total = manifest["row_count"]
+    if loaded + rejected != total:
+        raise QualityError(
+            f"loaded {loaded} + rejected {rejected} rows, but the manifest has {total}"
+        )
+    if total and rejected / total > MAX_REJECT_RATIO:
+        raise QualityError(
+            f"{rejected} of {total} rows rejected, above max_reject_ratio {MAX_REJECT_RATIO}. "
+            "Fix: see ops.ingestion_rejects, or raise load.max_reject_ratio"
+        )

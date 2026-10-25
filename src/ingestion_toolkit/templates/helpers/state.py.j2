@@ -1,0 +1,55 @@
+
+
+STATE_SQL = (
+    "SELECT watermark, previous_watermark, run_id FROM ops.ingestion_state WHERE dag_id = %s"
+)
+SUCCEEDED_SQL = """
+SELECT 1 FROM ops.ingestion_runs
+WHERE dag_id = %s AND run_id = %s AND status = 'success' AND watermark_to IS NOT NULL
+"""
+ADVANCE_SQL = """
+INSERT INTO ops.ingestion_state AS s (
+    dag_id, watermark, watermark_type, previous_watermark, run_id, updated_at
+) VALUES (%s, %s, %s, NULL, %s, now())
+ON CONFLICT (dag_id) DO UPDATE SET
+    previous_watermark = CASE
+        WHEN s.run_id = EXCLUDED.run_id THEN s.previous_watermark ELSE s.watermark
+    END,
+    watermark = EXCLUDED.watermark,
+    watermark_type = EXCLUDED.watermark_type,
+    run_id = EXCLUDED.run_id,
+    updated_at = EXCLUDED.updated_at
+"""
+
+
+def _read_state(cur: object) -> tuple | None:
+    cur.execute(STATE_SQL, (DAG_ID,))
+    return cur.fetchone()
+
+
+def _lower_bound(state: tuple | None, run_id: str) -> str | None:
+    """A retry of the same run re-reads its own window; any other run starts at the watermark."""
+    if state is None:
+        return INITIAL_VALUE
+    watermark, previous, state_run_id = state
+    chosen = previous if state_run_id == run_id else watermark
+    return INITIAL_VALUE if chosen is None else chosen
+
+
+def _guard_order(cur: object, state: tuple | None, run_id: str) -> None:
+    """Refuse to re-run a run that already moved the watermark once a later run replaced it."""
+    if state is None or state[2] == run_id:
+        return
+    cur.execute(SUCCEEDED_SQL, (DAG_ID, run_id))
+    if cur.fetchone() is not None:
+        raise AirflowFailException(
+            f"run {run_id!r} already loaded rows and a later run moved the watermark. "
+            "Fix: trigger a new run instead of re-running this one"
+        )
+
+
+def _advance_state(cur: object, manifest: dict) -> None:
+    """Move the watermark to the highest value extracted. An empty extract leaves it alone."""
+    if manifest["watermark_to"] is None:
+        return
+    cur.execute(ADVANCE_SQL, (DAG_ID, manifest["watermark_to"], BOUND_TYPE, manifest["run_id"]))
