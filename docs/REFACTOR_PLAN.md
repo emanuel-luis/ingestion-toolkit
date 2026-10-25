@@ -325,7 +325,8 @@ Root `compose.yaml`, `name: ingestion-toolkit`.
   health on `/api/v2/monitor/health`. No Dockerfile: rendered DAGs run on the stock image.
 - `make render-demo` renders `examples/postgres` into `demo/dags` on the host; `make up`,
   `make down` (`docker compose down -v`), `make demo`, `make smoke` (`demo/smoke.sh` runs
-  `airflow dags test` per DAG and the psql assertion files).
+  each DAG through `demo/run_dag.py`, which calls `DAG.test` with `run_after` equal to the
+  logical date, then the psql assertion files).
 
 ## 10. PR breakdown
 
@@ -349,7 +350,8 @@ green; `ingest init` creates a valid project.
 
 - Proven only by running them (PR2/PR3): `BaseHook.get_connection(id).get_hook()` on the SDK
   connection; the non-deprecated import for `AirflowFailException`; `DbApiHook.placeholder`;
-  `airflow dags test` on an existing logical date reusing the run_id; providers bundled in the
+  how to re-run the same run_id (answered: `airflow dags test` in 3.3.2 names the run after the
+  wall clock, so the demo calls `DAG.test(logical_date=d, run_after=d)`); providers bundled in the
   image; `standalone` with LocalExecutor on Postgres.
 - Landing is a local filesystem: multi-worker executors need a shared volume or a template
   override using `ObjectStoragePath`.

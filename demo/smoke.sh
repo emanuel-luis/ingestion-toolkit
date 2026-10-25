@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of the rendered DAGs against the demo stack. Starts from an empty stack, so
-# it can be run again at any time. Leaves the stack running: stop it with `make down`.
+# it can be run again at any time. `make smoke` renders the DAGs first. Leaves the stack running:
+# stop it with `make down`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,7 +16,8 @@ check() { local file=$1; shift; echo "check: $file"; psql_wh "$@" -f - < "demo/s
 scalar() { psql_wh -c "$1"; }
 run_dag() {
   echo "run: $1 at $2"
-  compose exec -T airflow airflow dags test "$1" "$2"
+  # demo/run_dag.py pins the run_id to the date; `airflow dags test` would use the clock
+  compose exec -T airflow python - "$1" "$2" < demo/run_dag.py
 }
 run_both() { run_dag "$ORDERS" "$1"; run_dag "$CUSTOMERS" "$1"; }
 state_snapshot() {

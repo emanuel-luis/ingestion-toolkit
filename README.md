@@ -168,7 +168,7 @@ What you see, layer by layer:
 - Bronze: `bronze.erp__orders` has 999 rows, because the NULL `quantity` breaks the column contract (`quantity:integer!`) and `max_reject_ratio: 0.01` tolerates one in a thousand. `bronze.erp__customers` has 200 rows.
 - Ops: the rejected row is in `ops.ingestion_rejects` with its reason and payload, each run is a row in `ops.ingestion_runs`, and the customers watermark is in `ops.ingestion_state`.
 
-`make demo` can be run again: the same logical date is the same run id, so the DAGs replace their own rows and counts do not change.
+`make demo` can be run again. `demo/run_dag.py` runs each DAG through `DAG.test` with the run id fixed by the logical date (`manual__2026-01-01T00:00:00+00:00`), so a second run is a re-run of the same Airflow run: the DAGs replace their own rows and the counts do not change. (`airflow dags test` would name every run after the current time.)
 
 `make smoke` starts from an empty stack and asserts the whole scenario with `demo/smoke/*.sql`: the first run, the same run id executed a second time (counts, rejects and watermark unchanged, run executed again), a next day with no source change (the incremental run extracts 0 rows), and a source change (`demo/postgres/seed/mutate.sql`) followed by another day (1009 orders, 208 customers, because append keeps history). CI runs it in the `smoke` job.
 

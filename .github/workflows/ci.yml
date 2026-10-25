@@ -126,7 +126,7 @@ jobs:
           export AIRFLOW_UID
           make smoke
       - name: Compose logs
-        if: failure()
+        if: failure() || cancelled()
         run: docker compose logs --no-color
       - name: Stop the stack
         if: always()
