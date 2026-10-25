@@ -9,6 +9,7 @@ def load_bronze() -> dict:
     with closing(PostgresHook(postgres_conn_id=TARGET_CONN_ID).get_conn()) as conn:
         try:
             with conn.cursor() as cur:
+                _check_not_stale(cur, manifest)
                 specs = _column_specs(manifest["columns"])
                 cur.execute(_create_sql(specs))
                 _check_drift(cur, manifest["columns"])
