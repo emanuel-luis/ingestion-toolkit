@@ -16,7 +16,7 @@
 - Property-based tests (Hypothesis) for naming, cron validation, the column spec and the model round trip, on top of CLI tests.
 - A typed, src-layout package built with uv, checked with ruff and strict mypy.
 
-Roadmap: a change data capture pattern with merge loads, `ingest init`, and a docker compose demo that runs the rendered DAGs end to end. Until then the rendered DAGs are checked by import (DagBag) in CI, not run against a database.
+Roadmap: a change data capture pattern with merge loads and `ingest init`. The rendered DAGs run end to end against Postgres in the compose demo below, and CI runs that demo as a smoke test.
 
 ## How it works
 
@@ -45,7 +45,7 @@ Python 3.11+, Typer, Pydantic v2, PyYAML, Jinja2, uv, pytest, Hypothesis, ruff, 
 uv sync
 uv run ingest add rdbms fullscan \
   --source erp --database erp --schema sales --table orders --primary-key id \
-  --columns "id:integer!,customer_id:integer,product_id:integer,quantity:integer,total:numeric,order_date:date" \
+  --columns "id:integer!,customer_id:integer,product_id:integer,quantity:integer!,total:numeric,order_date:date" \
   --max-reject-ratio 0.01
 uv run ingest validate examples
 ```
@@ -78,7 +78,7 @@ extract:
       nullable: true
     - name: quantity
       type: integer
-      nullable: true
+      nullable: false
     - name: total
       type: numeric
       nullable: true
@@ -151,6 +151,29 @@ error: configs/erp__orders__fullscan.yml: load.max_reject_ratio: max_reject_rati
 
 Exit codes: 0 when everything is valid, 1 for an invalid config or a refused overwrite, 2 for a usage error.
 
+## Demo
+
+Needs Docker with Compose, `make` and `uv`.
+
+```bash
+make demo
+```
+
+This renders `examples/postgres` into `demo/dags`, starts Postgres 18 and Airflow 3.3.2 (the stock image, no Dockerfile), runs both DAGs for the logical date 2026-01-01 and prints what landed. Airflow is at http://127.0.0.1:8080 (demo auth, no login). `make down` stops the stack and deletes its volumes.
+
+What you see, layer by layer:
+
+- Source: database `erp`, schema `sales`, read through the `erp_reader` role that can only SELECT there. `orders` has 1000 rows, one of them with a NULL `quantity`. `customers` has 200 rows with an `updated_at` column.
+- Landing: JSON Lines plus a manifest per run under `demo/data/landing/{source}/{table}/run_id=.../`.
+- Bronze: `bronze.erp__orders` has 999 rows, because the NULL `quantity` breaks the column contract (`quantity:integer!`) and `max_reject_ratio: 0.01` tolerates one in a thousand. `bronze.erp__customers` has 200 rows.
+- Ops: the rejected row is in `ops.ingestion_rejects` with its reason and payload, each run is a row in `ops.ingestion_runs`, and the customers watermark is in `ops.ingestion_state`.
+
+`make demo` can be run again: the same logical date is the same run id, so the DAGs replace their own rows and counts do not change.
+
+`make smoke` starts from an empty stack and asserts the whole scenario with `demo/smoke/*.sql`: the first run, the same run id executed a second time (counts, rejects and watermark unchanged, run executed again), a next day with no source change (the incremental run extracts 0 rows), and a source change (`demo/postgres/seed/mutate.sql`) followed by another day (1009 orders, 208 customers, because append keeps history). CI runs it in the `smoke` job.
+
+Everything in the demo is synthetic and the passwords in `.env.example` are for the local stack only.
+
 ## Config reference
 
 The file name must be `{source}__{table}__{pattern}` in lowercase, for example `erp__orders__fullscan.yml`. Unknown fields are rejected, and so are duplicate YAML keys. An optional section (`load`, `landing`, `schedule`, `metadata`) that is missing or null takes its defaults; to run a DAG only when triggered, set `schedule.cron: null` instead.
@@ -203,6 +226,7 @@ src/ingestion_toolkit/
   naming.py       identifier rules, DAG ids, bronze table names
   errors.py       error values and the one-line error format
 examples/postgres/  two ready configs, reproduced by tests/test_examples.py
+compose.yaml      the demo stack; demo/ holds the seed data, smoke test and rendered DAGs
 scripts/          check_dag_imports.py, the DagBag gate CI runs
 tests/            unit, property-based, golden-file and CLI tests (tests/golden)
 docs/             design decisions and the implementation plan
