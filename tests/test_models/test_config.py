@@ -296,3 +296,17 @@ def test_reserved_prefix_without_columns() -> None:
     data = incremental()
     data["extract"]["watermark"]["column"] = "_ingest_loaded_at"
     rejected(data, loc="extract.watermark.column", text="reserved prefix")
+
+
+@pytest.mark.parametrize("value", [2**63, -(2**63) - 1])
+def test_integer_initial_value_beyond_bigint_is_rejected(value: int) -> None:
+    rejected(
+        incremental(type="integer", initial_value=value),
+        loc="extract.watermark",
+        text="outside the bigint range",
+    )
+
+
+@pytest.mark.parametrize("value", [2**63 - 1, -(2**63)])
+def test_integer_initial_value_at_bigint_edge_is_accepted(value: int) -> None:
+    Config.model_validate(incremental(type="integer", initial_value=value))
