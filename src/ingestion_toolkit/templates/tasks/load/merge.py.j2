@@ -1,0 +1,38 @@
+
+
+{{ dag.load.conflict_target_sql | py("CONFLICT_TARGET_SQL") }}
+{{ dag.load.merge_guard_sql | py("MERGE_GUARD_SQL") }}
+MERGE_KEYS = {{ dag.load.merge_keys | py }}
+REQUIRED_COLUMNS = {{ dag.load.required_columns | py }}
+OPERATION_COLUMN = {{ dag.load.operation_column | py }}
+DELETE_VALUES = {{ dag.load.delete_values | py }}
+EXTRA_DDL = {{ dag.load.extra_ddl | py }}
+EXTRA_INSERT_COLUMNS = ["_ingest_deleted"]
+
+
+def _conflict_sql(specs: list[tuple[str, str, bool]]) -> str:
+    """Upsert on the merge keys. An older version never replaces a newer one."""
+    updates = [f"{_quote(n)} = EXCLUDED.{_quote(n)}" for n, _, _ in specs if n not in MERGE_KEYS]
+    updates += [
+        f"{_quote(n)} = EXCLUDED.{_quote(n)}"
+        for n in ("_ingest_run_id", "_ingest_loaded_at", "_ingest_deleted")
+    ]
+    return (
+        f" ON CONFLICT {CONFLICT_TARGET_SQL} DO UPDATE SET {', '.join(updates)}"
+        f" WHERE {MERGE_GUARD_SQL}"
+    )
+
+
+def _extra_values(row: dict) -> tuple:
+    """The delete flag: set when the operation column holds one of the delete values."""
+    if OPERATION_COLUMN is None or row.get(OPERATION_COLUMN) is None:
+        return (False,)
+    return (str(row[OPERATION_COLUMN]) in DELETE_VALUES,)
+
+
+def _check_duplicates(cur: object, run_id: str) -> None:
+    """Merge: repeated keys in one run are expected, the highest sequence wins."""
+
+
+def _prepare_target(cur: object, run_id: str) -> None:
+    """Merge: nothing to clear, upserting the same rows again changes nothing."""

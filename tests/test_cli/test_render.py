@@ -14,21 +14,30 @@ GOOD = (
     "version: 1\nsource: {name: erp, database: erp}\n"
     "extract: {table: orders, primary_key: id, pattern: fullscan}\n"
 )
-MERGE = (
+INCREMENTAL = (
     "version: 1\nsource: {name: erp, database: erp}\n"
     "extract: {table: orders, primary_key: id, pattern: incremental,"
-    " watermark: {column: updated_at}}\nload: {write_mode: merge}\n"
+    " watermark: {column: updated_at}}\n"
 )
 
 
 def test_render_examples(tmp_path: Path) -> None:
     result = runner.invoke(app, ["render", str(EXAMPLES), "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 0, result.stderr
-    assert result.stdout.strip().splitlines()[-1] == "2 rendered"
+    assert result.stdout.strip().splitlines()[-1] == "3 rendered"
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
         "erp__customers__incremental.py",
         "erp__orders__fullscan.py",
+        "erp__products__cdc.py",
     ]
+
+
+def test_render_every_example_dir(tmp_path: Path) -> None:
+    args = ["render", str(ROOT / "examples" / "postgres"), str(ROOT / "examples" / "mssql")]
+    result = runner.invoke(app, [*args, "--output-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "4 rendered"
+    assert (tmp_path / "erp_mssql__products__cdc.py").is_file()
 
 
 def test_dry_run_lists_paths_and_writes_nothing(tmp_path: Path) -> None:
@@ -36,7 +45,7 @@ def test_dry_run_lists_paths_and_writes_nothing(tmp_path: Path) -> None:
     result = runner.invoke(app, ["render", str(EXAMPLES), "--output-dir", str(out), "--dry-run"])
     assert result.exit_code == 0
     assert "erp__orders__fullscan.py" in result.stdout
-    assert result.stdout.strip().splitlines()[-1] == "2 would be rendered"
+    assert result.stdout.strip().splitlines()[-1] == "3 would be rendered"
     assert not out.exists()
 
 
@@ -56,11 +65,15 @@ def test_render_failure_is_exit_1_and_writes_nothing(tmp_path: Path) -> None:
     configs = tmp_path / "configs"
     configs.mkdir()
     (configs / "erp__orders__fullscan.yml").write_text(GOOD, encoding="utf-8")
-    (configs / "erp__orders__incremental.yml").write_text(MERGE, encoding="utf-8")
+    (configs / "erp__orders__incremental.yml").write_text(INCREMENTAL, encoding="utf-8")
+    templates = tmp_path / "t" / "tasks" / "extract"
+    templates.mkdir(parents=True)
+    (templates / "windowed.py.j2").write_text("X = (\n", encoding="utf-8")  # only incremental
     out = tmp_path / "out"
-    result = runner.invoke(app, ["render", str(configs), "--output-dir", str(out)])
+    args = ["render", str(configs), "--output-dir", str(out), "--template-dir", str(tmp_path / "t")]
+    result = runner.invoke(app, args)
     assert result.exit_code == 1
-    assert "load.write_mode" in result.stderr and ". Fix: use write_mode append" in result.stderr
+    assert "not valid Python" in result.stderr
     assert result.stdout.strip() == "0 rendered, 1 failed"
     assert not out.exists()
 

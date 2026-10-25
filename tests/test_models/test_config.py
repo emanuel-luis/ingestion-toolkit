@@ -181,6 +181,85 @@ def test_write_mode_allowed_per_pattern() -> None:
     Config.model_validate(data)
 
 
+def cdc(columns: list[dict[str, Any]] | None = None, **block: Any) -> dict[str, Any]:
+    extra = {} if columns is None else {"columns": columns}
+    return base(pattern="cdc", cdc={"sequence_column": "seq", **block}, **extra)
+
+
+def test_cdc_defaults() -> None:
+    config = Config.model_validate(cdc())
+    assert config.load.write_mode is WriteMode.MERGE
+    assert config.load.merge_keys == ("id",)
+    assert config.extract.cdc is not None
+    assert config.extract.cdc.sequence_type == "integer"
+    assert config.extract.cdc.delete_values == ("D",)
+    assert config.dag_id == "erp__orders__cdc"
+
+
+def test_cdc_block_required_and_forbidden() -> None:
+    rejected(base(pattern="cdc"), loc="extract", text="extract.cdc is required")
+    rejected(base(cdc={"sequence_column": "seq"}), loc="extract", text="extract.cdc is not allowed")
+
+
+def test_cdc_only_merges() -> None:
+    data = cdc()
+    data["load"] = {"write_mode": "append"}
+    rejected(data, loc="", text="not allowed for pattern")
+
+
+def test_rowversion_needs_mssql_and_no_sequence_type() -> None:
+    data = cdc(mechanism="rowversion")
+    rejected(data, loc="", text="needs source_type mssql")
+    data["source"]["source_type"] = "mssql"
+    config = Config.model_validate(data)
+    assert config.extract.cdc is not None and config.extract.cdc.sequence_type is None
+    data = cdc(mechanism="rowversion", sequence_type="integer")
+    data["source"]["source_type"] = "mssql"
+    rejected(data, loc="extract.cdc", text="not allowed for mechanism rowversion")
+
+
+def test_operation_column_needs_delete_values() -> None:
+    rejected(
+        cdc(operation_column="op", delete_values=[]),
+        loc="extract.cdc",
+        text="delete_values is empty",
+    )
+    rejected(cdc(delete_values=[""]), loc="extract.cdc", text="empty value")
+
+
+def test_cdc_columns_are_checked_against_the_contract() -> None:
+    columns = [
+        {"name": "id", "type": "integer"},
+        {"name": "seq", "type": "text"},
+        {"name": "op", "type": "text"},
+    ]
+    rejected(cdc(columns=columns), loc="extract", text="does not fit column type")
+    good = [{**c, "type": "integer"} if c["name"] == "seq" else c for c in columns]
+    Config.model_validate(cdc(columns=good, operation_column="op"))
+    rejected(cdc(columns=good[:2], operation_column="op"), loc="extract", text="operation column")
+    rejected(cdc(columns=good[:1]), loc="extract", text="sequence column")
+    rowversion = cdc(mechanism="rowversion", columns=good)
+    rowversion["source"]["source_type"] = "mssql"
+    rejected(rowversion, loc="extract", text="mechanism rowversion does not fit")
+
+
+def test_merge_keys_rules() -> None:
+    data = incremental()
+    data["load"] = {"write_mode": "merge", "merge_keys": ["a", "a"]}
+    rejected(data, loc="load.merge_keys", text="duplicate")
+    data["load"] = {"write_mode": "append", "merge_keys": ["a"]}
+    rejected(data, loc="", text="merge_keys is not allowed")
+    data = incremental()
+    data["extract"]["columns"] = [
+        {"name": "id", "type": "integer"},
+        {"name": "updated_at", "type": "timestamp"},
+    ]
+    data["load"] = {"write_mode": "merge", "merge_keys": "other"}
+    rejected(data, loc="", text="merge key column(s) ['other']")
+    data["load"] = {"write_mode": "merge"}
+    assert Config.model_validate(data).load.merge_keys == ("id",)
+
+
 @pytest.mark.parametrize("ratio", [-0.1, 1.5])
 def test_reject_ratio_range(ratio: float) -> None:
     data = base()

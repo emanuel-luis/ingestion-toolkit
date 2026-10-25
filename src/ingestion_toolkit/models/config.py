@@ -11,8 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from ingestion_toolkit import naming
 from ingestion_toolkit.cron import PRESETS, is_valid_schedule
 from ingestion_toolkit.models.enums import (
+    CdcMechanism,
     ColumnType,
     Pattern,
+    SequenceType,
     SourceType,
     WatermarkType,
     WriteMode,
@@ -28,16 +30,19 @@ _IDENT_HINT = (
 _DEFAULT_WRITE_MODE: dict[str, WriteMode] = {
     Pattern.FULLSCAN.value: WriteMode.OVERWRITE,
     Pattern.INCREMENTAL.value: WriteMode.APPEND,
+    Pattern.CDC.value: WriteMode.MERGE,
 }
 _OPTIONAL_SECTIONS = ("load", "landing", "schedule", "metadata")
 _ALLOWED_WRITE_MODES = {
     Pattern.FULLSCAN: (WriteMode.OVERWRITE, WriteMode.APPEND),
     Pattern.INCREMENTAL: (WriteMode.APPEND, WriteMode.MERGE),
+    Pattern.CDC: (WriteMode.MERGE,),
 }
 _WATERMARK_COLUMN_TYPES = {
     WatermarkType.DATETIME: (ColumnType.TIMESTAMP, ColumnType.TIMESTAMPTZ, ColumnType.DATE),
     WatermarkType.INTEGER: (ColumnType.INTEGER,),
 }
+_TIME_COLUMN_TYPES = (ColumnType.TIMESTAMP, ColumnType.TIMESTAMPTZ, ColumnType.DATE)
 
 
 def _fail(message: str, hint: str) -> ValueError:
@@ -195,12 +200,68 @@ class Watermark(_Model):
         return self
 
 
+class CdcConfig(_Model):
+    """Where a change feed lives and how to order it (see docs/cdc-contract.md)."""
+
+    mechanism: CdcMechanism = CdcMechanism.GENERIC
+    sequence_column: str
+    sequence_type: SequenceType | None = None  # generic: integer by default; rowversion: unset
+    change_table: str | None = None
+    operation_column: str | None = None
+    delete_values: tuple[str, ...] = ("D",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_sequence_type(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and data.get("mechanism", CdcMechanism.GENERIC) != CdcMechanism.ROWVERSION
+            and data.get("sequence_type") is None
+        ):
+            return {**data, "sequence_type": SequenceType.INTEGER}
+        return data
+
+    @field_validator("sequence_column")
+    @classmethod
+    def _sequence_column(cls, value: str) -> str:
+        return _not_reserved(_ident(value, "sequence column"), "sequence column")
+
+    @field_validator("change_table")
+    @classmethod
+    def _change_table(cls, value: str | None) -> str | None:
+        return None if value is None else _ident(value, "change table")
+
+    @field_validator("operation_column")
+    @classmethod
+    def _operation_column(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _not_reserved(_ident(value, "operation column"), "operation column")
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if self.mechanism is CdcMechanism.ROWVERSION and self.sequence_type is not None:
+            raise _fail(
+                "cdc.sequence_type is not allowed for mechanism rowversion",
+                "remove sequence_type: a rowversion is compared as fixed-width hex text",
+            )
+        if self.operation_column is not None and not self.delete_values:
+            raise _fail(
+                "cdc.delete_values is empty while cdc.operation_column is set",
+                "list the operation values that mean delete, such as D",
+            )
+        if not all(self.delete_values):
+            raise _fail("cdc.delete_values has an empty value", "use non-empty values such as D")
+        return self
+
+
 class ExtractConfig(_Model):
     table: str
     primary_key: tuple[str, ...]
     pattern: Pattern
     columns: tuple[Column, ...] | None = None
     watermark: Watermark | None = None
+    cdc: CdcConfig | None = None
 
     @field_validator("table")
     @classmethod
@@ -256,6 +317,17 @@ class ExtractConfig(_Model):
                 f"extract.watermark is not allowed when pattern is {self.pattern.value}",
                 "remove the watermark or use pattern incremental",
             )
+        is_cdc = self.pattern is Pattern.CDC
+        if is_cdc and self.cdc is None:
+            raise _fail(
+                "extract.cdc is required when pattern is cdc",
+                "add cdc with at least sequence_column",
+            )
+        if not is_cdc and self.cdc is not None:
+            raise _fail(
+                f"extract.cdc is not allowed when pattern is {self.pattern.value}",
+                "remove the cdc block or use pattern cdc",
+            )
         if self.columns is None:
             return self
         return self._check_columns(keys)
@@ -288,7 +360,35 @@ class ExtractConfig(_Model):
                     f"{column.type.value!r}",
                     "use a column of type " + ", ".join(t.value for t in allowed),
                 )
+        if self.cdc is not None:
+            self._check_cdc_columns(self.cdc, columns)
         return self
+
+    def _check_cdc_columns(self, cdc: CdcConfig, columns: tuple[Column, ...]) -> None:
+        by_name = {c.name: c for c in columns}
+        sequence = by_name.get(cdc.sequence_column)
+        if sequence is None:
+            raise _fail(
+                f"cdc sequence column {cdc.sequence_column!r} is not in extract.columns",
+                "add it to columns or fix cdc.sequence_column",
+            )
+        allowed: tuple[ColumnType, ...]
+        if cdc.mechanism is CdcMechanism.ROWVERSION:
+            what, allowed = "mechanism rowversion", (ColumnType.TEXT,)
+        elif cdc.sequence_type is SequenceType.DATETIME:
+            what, allowed = "sequence type 'datetime'", _TIME_COLUMN_TYPES
+        else:
+            what, allowed = "sequence type 'integer'", (ColumnType.INTEGER,)
+        if sequence.type not in allowed:
+            raise _fail(
+                f"cdc {what} does not fit column type {sequence.type.value!r}",
+                "use a column of type " + ", ".join(t.value for t in allowed),
+            )
+        if cdc.operation_column is not None and cdc.operation_column not in by_name:
+            raise _fail(
+                f"cdc operation column {cdc.operation_column!r} is not in extract.columns",
+                "add it to columns or fix cdc.operation_column",
+            )
 
 
 class LoadConfig(_Model):
@@ -296,6 +396,7 @@ class LoadConfig(_Model):
     target_schema: str = "bronze"
     target_table: str | None = None
     write_mode: WriteMode | None = None
+    merge_keys: tuple[str, ...] | None = None
     max_reject_ratio: float = 0.0
 
     @field_validator("connection_id")
@@ -325,6 +426,24 @@ class LoadConfig(_Model):
                 f"the limit is {MAX_TARGET_TABLE_LENGTH}",
                 "set a shorter load.target_table",
             )
+        return value
+
+    @field_validator("merge_keys", mode="before")
+    @classmethod
+    def _merge_keys_list(cls, value: Any) -> Any:
+        return (value,) if isinstance(value, str) else value
+
+    @field_validator("merge_keys")
+    @classmethod
+    def _merge_keys(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        if not value:
+            raise _fail("load.merge_keys is empty", "list at least one column")
+        if len(set(value)) != len(value):
+            raise _fail("load.merge_keys has duplicate columns", "list each key column once")
+        for key in value:
+            _not_reserved(_ident(key, "merge key column"), "merge key column")
         return value
 
     @field_validator("max_reject_ratio")
@@ -423,6 +542,9 @@ class Config(_Model):
             and pattern in _DEFAULT_WRITE_MODE
         ):
             load["write_mode"] = _DEFAULT_WRITE_MODE[pattern]
+        keys = _attr(extract, "primary_key")
+        if load.get("merge_keys") is None and load.get("write_mode") == WriteMode.MERGE and keys:
+            load["merge_keys"] = [keys] if isinstance(keys, str) else list(keys)
         name, table = _attr(source, "name"), _attr(extract, "table")
         if load.get("target_table") is None and isinstance(name, str) and isinstance(table, str):
             load["target_table"] = naming.bronze_table_name(name, table)
@@ -437,7 +559,38 @@ class Config(_Model):
                 f"{self.extract.pattern.value!r}",
                 "use one of " + ", ".join(m.value for m in allowed),
             )
+        cdc = self.extract.cdc
+        if (
+            cdc is not None
+            and cdc.mechanism is CdcMechanism.ROWVERSION
+            and self.source.source_type is not SourceType.MSSQL
+        ):
+            raise _fail(
+                "cdc mechanism rowversion needs source_type mssql",
+                "set source.source_type to mssql or use mechanism generic",
+            )
+        self._check_merge_keys()
         return self
+
+    def _check_merge_keys(self) -> None:
+        keys = self.load.merge_keys
+        if self.load.write_mode is not WriteMode.MERGE:
+            if keys is not None:
+                raise _fail(
+                    f"load.merge_keys is not allowed when write_mode is {self.load.write_mode}",
+                    "remove merge_keys or use write_mode merge",
+                )
+            return
+        columns = self.extract.columns
+        if columns is None:
+            return
+        names = {c.name for c in columns}
+        missing = [k for k in keys or () if k not in names]
+        if missing:
+            raise _fail(
+                f"merge key column(s) {missing} are not in extract.columns",
+                "add them to columns or fix load.merge_keys",
+            )
 
     @property
     def dag_id(self) -> str:

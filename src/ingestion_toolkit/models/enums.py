@@ -13,6 +13,7 @@ class SourceType(StrEnum):
 class Pattern(StrEnum):
     FULLSCAN = "fullscan"
     INCREMENTAL = "incremental"
+    CDC = "cdc"
 
 
 class WriteMode(StrEnum):
@@ -35,3 +36,13 @@ class ColumnType(StrEnum):
 class WatermarkType(StrEnum):
     DATETIME = "datetime"
     INTEGER = "integer"
+
+
+class CdcMechanism(StrEnum):
+    GENERIC = "generic"
+    ROWVERSION = "rowversion"
+
+
+class SequenceType(StrEnum):
+    INTEGER = "integer"
+    DATETIME = "datetime"
