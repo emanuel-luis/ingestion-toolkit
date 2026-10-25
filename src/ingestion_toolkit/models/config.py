@@ -28,6 +28,7 @@ _DEFAULT_WRITE_MODE: dict[str, WriteMode] = {
     Pattern.FULLSCAN.value: WriteMode.OVERWRITE,
     Pattern.INCREMENTAL.value: WriteMode.APPEND,
 }
+_OPTIONAL_SECTIONS = ("load", "landing", "schedule", "metadata")
 _ALLOWED_WRITE_MODES = {
     Pattern.FULLSCAN: (WriteMode.OVERWRITE, WriteMode.APPEND),
     Pattern.INCREMENTAL: (WriteMode.APPEND, WriteMode.MERGE),
@@ -46,6 +47,20 @@ def _fail(message: str, hint: str) -> ValueError:
 def _ident(value: str, what: str) -> str:
     if not naming.IDENT_RE.fullmatch(value):
         raise _fail(f"{what} {value!r} is not a valid identifier", _IDENT_HINT)
+    return value
+
+
+def _attr(obj: Any, name: str) -> Any:
+    """Read a field from a dict or a model instance."""
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _not_reserved(value: str, what: str) -> str:
+    if value.startswith(RESERVED_PREFIX):
+        raise _fail(
+            f"{what} {value!r} uses the reserved prefix {RESERVED_PREFIX!r}",
+            "rename it in the config or alias it in the source",
+        )
     return value
 
 
@@ -70,12 +85,7 @@ class Column(_Model):
     @classmethod
     def _name(cls, value: str) -> str:
         _ident(value, "column name")
-        if value.startswith(RESERVED_PREFIX):
-            raise _fail(
-                f"column name {value!r} uses the reserved prefix {RESERVED_PREFIX!r}",
-                "rename the column in the config or alias it in the source",
-            )
-        return value
+        return _not_reserved(value, "column name")
 
 
 class Source(_Model):
@@ -130,36 +140,46 @@ class Source(_Model):
 class Watermark(_Model):
     column: str
     type: WatermarkType = WatermarkType.DATETIME
-    initial_value: str | int | None = None
+    initial_value: str | None = None  # canonical: ISO datetime string, or integer as text
 
     @field_validator("column")
     @classmethod
     def _column(cls, value: str) -> str:
-        return _ident(value, "watermark column")
+        return _not_reserved(_ident(value, "watermark column"), "watermark column")
 
-    @field_validator("initial_value", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _initial_value(cls, value: Any) -> Any:
+    def _normalise(cls, data: Any) -> Any:
+        """Store initial_value in one canonical text form, whatever way it was written."""
+        if not isinstance(data, dict) or data.get("initial_value") is None:
+            return data
+        value = data["initial_value"]
         if isinstance(value, bool):
             raise _fail("watermark initial_value is a boolean", "use an ISO datetime or an integer")
-        if isinstance(value, datetime | date):
-            return value.isoformat()
-        return value
+        if data.get("type") == WatermarkType.INTEGER:
+            if isinstance(value, int):
+                value = str(value)
+            if isinstance(value, str) and _INT_RE.fullmatch(value):
+                value = str(int(value))
+        elif isinstance(value, datetime | date | str):
+            text = value.isoformat() if isinstance(value, datetime | date) else value
+            try:
+                value = datetime.fromisoformat(text).isoformat()
+            except ValueError:
+                value = text
+        return {**data, "initial_value": value}
 
     @model_validator(mode="after")
     def _parses(self) -> Self:
         value = self.initial_value
         if value is None:
             return self
-        if self.type is WatermarkType.INTEGER:
-            ok = isinstance(value, int) or bool(_INT_RE.fullmatch(value))
-        else:
-            try:
-                ok = isinstance(value, str) and bool(datetime.fromisoformat(value))
-            except ValueError:
-                ok = False
+        integer = self.type is WatermarkType.INTEGER
+        try:
+            ok = bool(_INT_RE.fullmatch(value)) if integer else bool(datetime.fromisoformat(value))
+        except ValueError:
+            ok = False
         if not ok:
-            integer = self.type is WatermarkType.INTEGER
             raise _fail(
                 f"watermark initial_value {value!r} is not "
                 + ("an integer" if integer else "an ISO datetime"),
@@ -192,6 +212,24 @@ class ExtractConfig(_Model):
     def _primary_key_list(cls, value: Any) -> Any:
         return (value,) if isinstance(value, str) else value
 
+    @model_validator(mode="before")
+    @classmethod
+    def _force_key_columns_not_null(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        columns, keys = data.get("columns"), data.get("primary_key")
+        keys = (keys,) if isinstance(keys, str) else keys
+        if not isinstance(columns, list | tuple) or not isinstance(keys, list | tuple):
+            return data
+        fixed: list[Any] = []
+        for column in columns:
+            if isinstance(column, Column) and column.name in keys:
+                column = column.model_copy(update={"nullable": False})
+            elif isinstance(column, dict) and column.get("name") in keys:
+                column = {**column, "nullable": False}
+            fixed.append(column)
+        return {**data, "columns": fixed}
+
     @model_validator(mode="after")
     def _check(self) -> Self:
         keys = self.primary_key
@@ -200,7 +238,7 @@ class ExtractConfig(_Model):
         if len(set(keys)) != len(keys):
             raise _fail("primary_key has duplicate columns", "list each key column once")
         for key in keys:
-            _ident(key, "primary key column")
+            _not_reserved(_ident(key, "primary key column"), "primary key column")
         incremental = self.pattern is Pattern.INCREMENTAL
         if incremental and self.watermark is None:
             raise _fail(
@@ -244,11 +282,7 @@ class ExtractConfig(_Model):
                     f"{column.type.value!r}",
                     "use a column of type " + ", ".join(t.value for t in allowed),
                 )
-        fixed = tuple(
-            c.model_copy(update={"nullable": False}) if c.name in keys and c.nullable else c
-            for c in columns
-        )
-        return self.model_copy(update={"columns": fixed})
+        return self
 
 
 class LoadConfig(_Model):
@@ -366,21 +400,24 @@ class Config(_Model):
     @model_validator(mode="before")
     @classmethod
     def _resolve(cls, data: Any) -> Any:
-        """Fill write_mode and target_table so a written config states them explicitly."""
+        """Default null sections, then fill write_mode and target_table (dicts or instances)."""
         if not isinstance(data, dict):
             return data
-        source, extract, load = data.get("source"), data.get("extract"), data.get("load") or {}
-        if not (isinstance(source, dict) and isinstance(extract, dict) and isinstance(load, dict)):
-            return data
+        data = {k: v for k, v in data.items() if not (k in _OPTIONAL_SECTIONS and v is None)}
+        source, extract, load = data.get("source"), data.get("extract"), data.get("load", {})
+        if isinstance(load, LoadConfig):
+            load = load.model_dump()
+        if not isinstance(load, dict):
+            return data  # pydantic reports the bad section
         load = dict(load)
-        pattern = extract.get("pattern")
+        pattern = _attr(extract, "pattern")
         if (
             load.get("write_mode") is None
             and isinstance(pattern, str)
             and pattern in _DEFAULT_WRITE_MODE
         ):
             load["write_mode"] = _DEFAULT_WRITE_MODE[pattern]
-        name, table = source.get("name"), extract.get("table")
+        name, table = _attr(source, "name"), _attr(extract, "table")
         if load.get("target_table") is None and isinstance(name, str) and isinstance(table, str):
             load["target_table"] = naming.bronze_table_name(name, table)
         return {**data, "load": load}

@@ -111,3 +111,13 @@ def test_incremental_needs_watermark_column(tmp_path: Path) -> None:
 def test_bad_format_is_usage_error(tmp_path: Path) -> None:
     code, _, _ = add("fullscan", *BASE, "--format", "toml", out=tmp_path)
     assert code == 2
+
+
+def test_output_dir_that_is_a_file_exits_1(tmp_path: Path) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    code, _, err = add("fullscan", *BASE, out=blocker)
+    assert code == 1
+    assert err.startswith("error: ")
+    assert "cannot write file" in err
+    assert ". Fix: " in err

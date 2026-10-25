@@ -148,7 +148,7 @@ The file name must be `{source}__{table}__{pattern}` in lowercase, for example `
 
 Column types are integer, numeric, float, boolean, text, date, timestamp and timestamptz. Column names cannot start with `_ingest_` and cannot repeat.
 
-With a column contract, the primary key and the watermark column must be listed in it. Primary key columns are stored as not null. A datetime watermark needs a timestamp, timestamptz or date column, and an integer watermark needs an integer column. The initial value must be an ISO datetime or an integer to match the watermark type.
+With a column contract, the primary key and the watermark column must be listed in it. Primary key columns are stored as not null. A datetime watermark needs a timestamp, timestamptz or date column, and an integer watermark needs an integer column. The initial value must be an ISO datetime or an integer to match the watermark type. It is stored as text in one canonical form: an ISO datetime such as 2026-01-01T00:00:00, or an integer such as 5 (so 5, +05 and '5' are the same value). Columns and key names cannot start with `_ingest_`, including the primary key and the watermark column.
 
 Presets for cron are @once, @hourly, @daily, @weekly, @monthly, @quarterly and @yearly. Five-field expressions accept ranges, steps, lists, and month and weekday names.
 

@@ -128,3 +128,21 @@ def test_duplicate_dag_ids(tmp_path: Path) -> None:
     valid, errors = read_configs([tmp_path])
     assert len(valid) == 1
     assert errors[0].loc == "dag_id"
+
+
+def test_json_duplicate_keys_rejected(tmp_path: Path) -> None:
+    path = make(tmp_path, "erp__orders__fullscan.json", '{"version": 1, "version": 1}')
+    with pytest.raises(ConfigFailure) as info:
+        read_config(path)
+    line = format_error(info.value.errors[0])
+    assert line.startswith(f"error: {path.as_posix()}: ")
+    assert "duplicate key 'version'" in line
+    assert ". Fix: " in line
+
+
+def test_unhashable_yaml_key_is_an_error_line(tmp_path: Path) -> None:
+    path = make(tmp_path, text="{[a]: 1}: 2\n")
+    _, errors = read_configs([path])
+    assert len(errors) == 1
+    assert "unhashable key" in errors[0].message
+    assert errors[0].loc == "line 1"
