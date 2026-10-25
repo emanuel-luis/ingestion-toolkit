@@ -20,6 +20,8 @@ _FIX = ". Fix: "
 _GENERIC_HINTS = {
     "missing": "add the required field",
     "extra_forbidden": "remove the field or fix its spelling",
+    "model_type": "write the section as key: value pairs, or remove it",
+    "model_attributes_type": "write the section as key: value pairs, or remove it",
 }
 
 
@@ -35,12 +37,31 @@ class _Loader(yaml.SafeLoader):
         seen: set[Any] = set()
         for key_node, _ in node.value:
             key = self.construct_object(key_node, deep=True)
+            try:
+                hash(key)
+            except TypeError:
+                raise yaml.constructor.ConstructorError(
+                    None, None, "found unhashable key", key_node.start_mark
+                ) from None
             if key in seen:
                 raise yaml.constructor.ConstructorError(
                     None, None, f"duplicate key {key!r}", key_node.start_mark
                 )
             seen.add(key)
         return super().construct_mapping(node, deep)
+
+
+class _DuplicateKeyError(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeyError(f"duplicate key {key!r}")
+        result[key] = value
+    return result
 
 
 class _Dumper(yaml.SafeDumper):
@@ -104,8 +125,12 @@ def _parse(path: Path) -> Any:
         ) from exc
     try:
         if SUFFIXES[path.suffix] == "json":
-            return json.loads(text)
+            return json.loads(text, object_pairs_hook=_no_duplicates)
         return yaml.load(text, Loader=_Loader)
+    except _DuplicateKeyError as exc:
+        raise ConfigFailure(
+            [_error(path, "file", str(exc), "remove or rename the repeated key")]
+        ) from exc
     except json.JSONDecodeError as exc:
         raise ConfigFailure(
             [_error(path, f"line {exc.lineno}", exc.msg, "fix the JSON syntax")]

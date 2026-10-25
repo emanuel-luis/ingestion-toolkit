@@ -221,3 +221,78 @@ def test_load_none_section_is_defaulted() -> None:
 def test_round_trip(data: dict[str, Any]) -> None:
     config = Config.model_validate(copy.deepcopy(data))
     assert Config.model_validate(config.model_dump(mode="json")) == config
+
+
+def test_direct_construction_forces_key_columns_not_null() -> None:
+    import warnings
+
+    from ingestion_toolkit.models.config import Column, ExtractConfig, LoadConfig, Source
+    from ingestion_toolkit.models.enums import ColumnType, Pattern
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        extract = ExtractConfig(
+            table="orders",
+            primary_key=("id",),
+            pattern=Pattern.FULLSCAN,
+            columns=(Column(name="id", type=ColumnType.INTEGER),),
+        )
+        assert extract.columns is not None
+        assert extract.columns[0].nullable is False
+        config = Config(
+            version=1,
+            source=Source(name="erp", connection_id="erp", database="erp", schema_name="public"),
+            extract=extract,
+        )
+        assert config.load.write_mode is WriteMode.OVERWRITE
+        assert config.load.target_table == "erp__orders"
+        again = Config(
+            version=1,
+            source=Source(name="erp", connection_id="erp", database="erp", schema_name="public"),
+            extract=extract,
+            load=LoadConfig(max_reject_ratio=0.5),
+        )
+        assert again.load.write_mode is WriteMode.OVERWRITE
+        assert again.load.max_reject_ratio == 0.5
+
+
+def test_initial_value_is_canonical_text() -> None:
+    def value(kind: str, raw: Any) -> str | None:
+        return Config.model_validate(
+            incremental(type=kind, initial_value=raw)
+        ).extract.watermark.initial_value  # type: ignore[union-attr]
+
+    assert value("datetime", "2026-01-01") == "2026-01-01T00:00:00"
+    assert value("datetime", "2026-01-01T00:00:00") == "2026-01-01T00:00:00"
+    assert value("datetime", __import__("datetime").date(2026, 1, 1)) == "2026-01-01T00:00:00"
+    assert value("integer", 5) == value("integer", "5") == value("integer", "+05") == "5"
+    assert value("integer", None) is None
+
+
+@pytest.mark.parametrize("bad", [[], "", 0, "x", ["a"]])
+def test_non_mapping_section_is_an_error_with_hint(bad: Any) -> None:
+    from ingestion_toolkit.config_io import validation_errors
+
+    for section in ("load", "landing", "schedule", "metadata"):
+        data = base()
+        data[section] = bad
+        with pytest.raises(ValidationError) as info:
+            Config.model_validate(data)
+        errors = validation_errors(__import__("pathlib").Path("x.yml"), info.value)
+        assert any(e.loc == section for e in errors)
+        assert all(e.hint and "README" not in e.hint for e in errors if e.loc == section)
+
+
+def test_null_sections_use_defaults() -> None:
+    data = base()
+    data.update(load=None, landing=None, schedule=None, metadata=None)
+    config = Config.model_validate(data)
+    assert config.schedule.cron == "@daily"
+    assert config.load.write_mode is WriteMode.OVERWRITE
+
+
+def test_reserved_prefix_without_columns() -> None:
+    rejected(base(primary_key=["_ingest_id"]), loc="extract", text="reserved prefix")
+    data = incremental()
+    data["extract"]["watermark"]["column"] = "_ingest_loaded_at"
+    rejected(data, loc="extract.watermark.column", text="reserved prefix")

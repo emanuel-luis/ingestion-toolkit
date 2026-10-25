@@ -144,7 +144,20 @@ def _add(
             ]
         )
         raise typer.Exit(1)
-    write_config(path, config, fmt)
+    try:
+        write_config(path, config, fmt)
+    except OSError as exc:
+        print_errors(
+            [
+                ConfigError(
+                    path.as_posix(),
+                    "file",
+                    f"cannot write file: {exc.strerror or exc}",
+                    "check that --output-dir is a writable directory",
+                )
+            ]
+        )
+        raise typer.Exit(1) from exc
     typer.echo(f"wrote {path.as_posix()}")
 
 
