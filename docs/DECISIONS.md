@@ -1,0 +1,24 @@
+# Decisions
+
+Low-impact decisions taken while building the project, newest last. Each row says what was
+decided, the choice, and why. Design changes after the first release get a new row.
+
+| # | Date | Decision | Choice | Why |
+| --- | --- | --- | --- | --- |
+| 1 | 2026-10-25 | Publish to PyPI in the first release? | No. `release.yml` (tag-driven Trusted Publishing, TestPyPI dry run on manual dispatch) is kept ready but not triggered | The CLI is new; publishing is outward-facing and can wait until the full scope is done and reviewed |
+| 2 | 2026-10-25 | What the rendered DAGs use | Plain Airflow 3 (Task SDK `airflow.sdk`) with public providers only: standard, common.sql, postgres. No Spark/Databricks task template | Rendered DAGs must run on a stock Airflow install and read clearly without knowing any private operator library |
+| 3 | 2026-10-25 | Use `mssql-cdc-pyspark` as the CDC extractor in rendered DAGs | Deferred: an optional template after the core CLI ships | It needs a Spark task template, which decision 2 leaves out of the first scope |
+| 4 | 2026-10-25 | Build backend | `uv_build` (`>=0.13.5,<0.14`) | The program baseline allows setuptools or uv_build for packages; uv_build ships everything under the module root, so the Jinja templates and `py.typed` need no extra config |
+| 5 | 2026-10-25 | Python floor | `>=3.11` | Python 3.10 reached end of life on 2026-10-01 (PEP 619). Typer and Pydantic allow 3.10, so 3.11 is the widest floor still supported upstream. The CLI never imports Airflow |
+| 6 | 2026-10-25 | Tooling where the planning spec and the baseline differ | Baseline wins: ruff line-length 100 (spec said 144) with default rules plus `BLE`, mypy strict on `src`, SHA-pinned actions, `uv sync --locked` in CI | Same gates as the owner's other packages |
+| 7 | 2026-10-25 | How the work ships | Three stacked PRs: (1) minimum shippable: config models, `ingest add` for fullscan and incremental, `ingest validate`, tests, CI; (2) rendered DAGs for fullscan and incremental with golden files and an Airflow import check; (3) CDC, `ingest init`, docker compose demo with a Postgres source and a CI smoke test | Each PR is reviewable on its own and leaves `main` green |
+| 8 | 2026-10-25 | Naming and provenance | Generic synthetic names only (source `erp`, tables `orders`, `customers`, `products`); the pattern is rebuilt from the public spec, never from any employer code | Public portfolio repository |
+| 9 | 2026-10-25 | Where watermark and CDC state live | A state table in the target database (`ops.ingestion_state`), advanced in the same transaction as the bronze write, keeping `previous_watermark` and `run_id` so a retry of the same run reuses its lower bound | An Airflow Variable is a separate write: a crash between the load and the Variable update duplicates or skips rows, and Variables can be edited in the UI without an audit trail |
+| 10 | 2026-10-25 | Landing format | JSON Lines, one partition per run_id, plus a `_manifest.json` written last | Stdlib only; keeps NULL apart from empty strings and numbers apart from text; CSV loses both, Parquet would add pyarrow to the Airflow image |
+| 11 | 2026-10-25 | Target database | PostgreSQL through the postgres provider; any `DbApiHook` connection as the source | One well-known target keeps the rendered SQL readable; other dialects go through `--template-dir` overrides |
+| 12 | 2026-10-25 | Config model shape | One `ExtractConfig` with `model_validator` checks instead of discriminated unions | The YAML is the same either way; validators give clearer errors |
+| 13 | 2026-10-25 | Changes to the planning spec | Dropped `load.target_path` (bronze is a table), `cdc.watermark_table` (replaced by decision 9), `metadata.version` (replaced by a root `version: 1`) and the cluster templates; `target_layer` became `load.target_schema`; added an optional `columns` data contract and `load.connection_id` | The spec predates the layer, state and contract design |
+| 14 | 2026-10-25 | `validate` and `render` arguments | Positional paths (files or directories, default `configs/`) instead of `--config` / `--config-dir` | One argument covers both cases |
+| 15 | 2026-10-25 | Cron validation and YAML library | Own pure cron validator (property-tested), PyYAML with a loader that rejects duplicate keys | No croniter dependency; duplicate keys are a silent error source in hand-written YAML |
+| 16 | 2026-10-25 | Bulk render failure mode | All or nothing: if any config is invalid, nothing is written | A half-rendered DAG folder is worse than none |
+| 17 | 2026-10-25 | Demo stack | One Postgres container (databases `airflow`, `erp`, `warehouse`) and one `airflow standalone` container on the stock image; the CI smoke drives it with `airflow dags test` | Fewest moving parts that still run the rendered DAGs end to end |
