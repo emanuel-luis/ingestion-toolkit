@@ -3,6 +3,8 @@ SELECT 'bronze.erp__orders' AS "table", count(*) AS "rows" FROM bronze.erp__orde
 UNION ALL
 SELECT 'bronze.erp__customers', count(*) FROM bronze.erp__customers
 UNION ALL
+SELECT 'bronze.erp__products', count(*) FROM bronze.erp__products
+UNION ALL
 SELECT 'ops.ingestion_rejects', count(*) FROM ops.ingestion_rejects;
 \echo 'runs'
 SELECT dag_id, status, rows_extracted, rows_loaded, rows_rejected

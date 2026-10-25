@@ -14,6 +14,27 @@ BEGIN
     AND status = 'success' AND rows_extracted = 8 AND rows_loaded = 8;
   IF n <> 1 THEN RAISE EXCEPTION 'the 2026-01-03 incremental run did not load 8 rows'; END IF;
 
+  -- CDC merges: 100 first rows, 4 updated in place, 2 new
+  SELECT count(*) INTO n FROM bronze.erp__products;
+  IF n <> 102 THEN RAISE EXCEPTION 'bronze.erp__products has % rows, expected 102', n; END IF;
+
+  SELECT count(*) INTO n FROM bronze.erp__products WHERE category = 'Clearance' AND id <= 4;
+  IF n <> 4 THEN RAISE EXCEPTION 'the 4 product updates were not applied, found %', n; END IF;
+
+  SELECT count(*) INTO n FROM bronze.erp__products WHERE id <= 4 AND version_stamp > 100;
+  IF n <> 4 THEN RAISE EXCEPTION 'the updated products kept their old version_stamp'; END IF;
+
+  SELECT count(*) INTO n FROM bronze.erp__products WHERE _ingest_deleted;
+  IF n <> 0 THEN RAISE EXCEPTION 'expected no deleted products, found %', n; END IF;
+
+  SELECT count(*) INTO n FROM ops.ingestion_runs
+  WHERE dag_id = 'erp__products__cdc' AND run_id LIKE '%2026-01-03%'
+    AND status = 'success' AND rows_extracted = 6 AND rows_loaded = 6;
+  IF n <> 1 THEN RAISE EXCEPTION 'the 2026-01-03 CDC run did not load 6 rows'; END IF;
+
+  SELECT count(*) INTO n FROM ops.ingestion_state
+  WHERE dag_id = 'erp__products__cdc' AND watermark = '106' AND previous_watermark = '100';
+  IF n <> 1 THEN RAISE EXCEPTION 'the products watermark did not move from 100 to 106'; END IF;
 END $$;
 
 -- The watermark advanced, and the old one became previous_watermark.

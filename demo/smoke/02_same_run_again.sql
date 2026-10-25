@@ -13,10 +13,17 @@ BEGIN
   IF n <> 200 THEN RAISE EXCEPTION 'rerun: bronze.erp__customers has % rows, expected 200', n; END IF;
 
   SELECT count(*) INTO n FROM ops.ingestion_runs WHERE status = 'success';
-  IF n <> 2 THEN RAISE EXCEPTION 'rerun: expected 2 success rows, found %', n; END IF;
+  IF n <> 3 THEN RAISE EXCEPTION 'rerun: expected 3 success rows, found %', n; END IF;
 
   SELECT count(*) INTO n FROM ops.ingestion_runs;
-  IF n <> 2 THEN RAISE EXCEPTION 'rerun: expected 2 rows in ops.ingestion_runs, found %', n; END IF;
+  IF n <> 3 THEN RAISE EXCEPTION 'rerun: expected 3 rows in ops.ingestion_runs, found %', n; END IF;
+
+  -- the CDC rerun re-reads the same window and merges it onto itself: still 100 rows
+  SELECT count(*) INTO n FROM bronze.erp__products;
+  IF n <> 100 THEN RAISE EXCEPTION 'rerun: bronze.erp__products has % rows, expected 100', n; END IF;
+
+  SELECT count(*) INTO n FROM bronze.erp__products WHERE _ingest_deleted;
+  IF n <> 0 THEN RAISE EXCEPTION 'rerun: expected no deleted products, found %', n; END IF;
 END $$;
 
 -- The watermark did not move.

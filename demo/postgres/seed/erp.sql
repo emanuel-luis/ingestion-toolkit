@@ -37,3 +37,34 @@ SELECT i,
        round(((i % 7 + 1) * (5 + (i % 13) * 2.5))::numeric, 2),
        date '2025-06-01' + i % 180
 FROM generate_series(1, 1000) AS i;
+
+-- Products carry a change sequence: a trigger stamps every insert and update from one sequence,
+-- which is what the CDC DAG reads. (A real source could use a log position or a rowversion.)
+CREATE SEQUENCE sales.products_version_seq;
+
+CREATE TABLE sales.products (
+    id             integer PRIMARY KEY,
+    name           text,
+    category       text,
+    price          numeric(10, 2),
+    version_stamp  bigint NOT NULL
+);
+
+CREATE FUNCTION sales.stamp_product_version() RETURNS trigger AS $$
+BEGIN
+    NEW.version_stamp := nextval('sales.products_version_seq');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER products_stamp_version
+BEFORE INSERT OR UPDATE ON sales.products
+FOR EACH ROW EXECUTE FUNCTION sales.stamp_product_version();
+
+INSERT INTO sales.products (id, name, category, price, version_stamp)
+SELECT i,
+       'Product ' || lpad(i::text, 3, '0'),
+       (ARRAY['Tools', 'Garden', 'Kitchen', 'Toys'])[i % 4 + 1],
+       round((5 + (i % 17) * 3.25)::numeric, 2),
+       0  -- replaced by the trigger
+FROM generate_series(1, 100) AS i;
