@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples" / "postgres"
 COMMON = ["--source", "erp", "--database", "erp", "--schema", "sales", "--primary-key", "id"]
 ORDER_COLUMNS = (
-    "id:integer!,customer_id:integer,product_id:integer,quantity:integer,"
+    "id:integer!,customer_id:integer,product_id:integer,quantity:integer!,"
     "total:numeric,order_date:date"
 )
 COMMANDS = {

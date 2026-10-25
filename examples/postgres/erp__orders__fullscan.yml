@@ -22,7 +22,7 @@ extract:
       nullable: true
     - name: quantity
       type: integer
-      nullable: true
+      nullable: false
     - name: total
       type: numeric
       nullable: true
