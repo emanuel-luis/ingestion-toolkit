@@ -1,0 +1,5 @@
+
+
+def _prepare_target(cur: object, run_id: str) -> None:
+    """Append: drop only this run's rows, so a retry of the run never duplicates them."""
+    cur.execute(PREPARE_SQL, (run_id,))

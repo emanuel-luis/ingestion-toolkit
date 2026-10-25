@@ -7,16 +7,17 @@ from typing import Annotated
 import typer
 
 from ingestion_toolkit import __version__
-from ingestion_toolkit.cli import add, validate
+from ingestion_toolkit.cli import add, render, validate
 
 app = typer.Typer(
     name="ingest",
-    help="Write and validate ingestion configs for relational sources.",
+    help="Write, validate and render ingestion configs for relational sources.",
     no_args_is_help=True,
     add_completion=False,
 )
 app.add_typer(add.app, name="add")
 app.command("validate")(validate.validate)
+app.command("render")(render.render)
 
 
 def _show_version(value: bool) -> None:
@@ -32,4 +33,4 @@ def main(
         typer.Option("--version", callback=_show_version, is_eager=True, help="Show the version."),
     ] = False,
 ) -> None:
-    """Write and validate ingestion configs for relational sources."""
+    """Write, validate and render ingestion configs for relational sources."""

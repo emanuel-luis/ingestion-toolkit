@@ -1,0 +1,28 @@
+
+DAG_ID = {{ dag.dag_id | py }}
+DESCRIPTION = {{ dag.description | py }}
+OWNER = {{ dag.owner | py }}
+SCHEDULE = {{ dag.schedule | py }}
+START_DATE = datetime.fromisoformat({{ dag.start_date | py }}).replace(tzinfo=timezone.utc)
+RETRIES = {{ dag.retries | py }}
+RETRY_DELAY_MINUTES = {{ dag.retry_delay_minutes | py }}
+TAGS = {{ dag.tags | py }}
+
+SOURCE_NAME = {{ dag.source_name | py }}
+SOURCE_TABLE = {{ dag.source_table | py }}
+PATTERN = {{ dag.pattern | py }}
+SOURCE_CONN_ID = {{ dag.source_conn_id | py }}
+TARGET_CONN_ID = {{ dag.target_conn_id | py }}
+LANDING_DIR = {{ dag.landing_dir | py }}
+
+{{ dag.load.bronze_schema_sql | py("BRONZE_SCHEMA_SQL") }}
+BRONZE_SCHEMA = {{ dag.load.bronze_schema | py }}
+BRONZE_NAME = {{ dag.load.bronze_name | py }}
+{{ dag.load.bronze_table | py("BRONZE_TABLE") }}
+{{ dag.load.prepare_sql | py("PREPARE_SQL") }}
+{{ dag.load.duplicate_sql | py("DUPLICATE_SQL") }}
+PRIMARY_KEY = {{ dag.load.primary_key | py }}
+MAX_REJECT_RATIO = {{ dag.load.max_reject_ratio | py }}
+# (name, type, nullable) from the config's columns, or None: text columns named by the extract
+CONTRACT = {{ dag.load.columns | py }}
+PG_TYPES = {{ dag.load.pg_types | py }}

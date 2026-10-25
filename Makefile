@@ -1,4 +1,4 @@
-.PHONY: help install lint test test-fast build clean
+.PHONY: help install lint test test-fast render build clean
 .DEFAULT_GOAL := help
 
 help:           ## list the targets
@@ -17,6 +17,9 @@ test:           ## the full test suite
 
 test-fast:      ## quiet, stop at the first failure
 	uv run pytest -q -x
+
+render:         ## render examples/postgres into output/
+	uv run ingest render examples/postgres --output-dir output
 
 build:          ## wheel and sdist into dist/
 	uv build

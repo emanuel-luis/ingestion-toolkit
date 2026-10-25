@@ -1,0 +1,21 @@
+
+
+{{ dag.extract.extract_sql | py("EXTRACT_SQL") }}
+
+
+@task
+def extract_to_landing() -> str:
+    """Copy the whole source table into this run's landing partition."""
+    run_id = get_current_context()["run_id"]
+    partition = _partition_dir(run_id)
+    started_at = _utcnow()
+    source = BaseHook.get_connection(SOURCE_CONN_ID).get_hook()
+    with closing(source.get_conn()) as connection, closing(connection.cursor()) as cursor:
+        cursor.execute(EXTRACT_SQL)
+        columns, row_count, _ = _write_partition(partition, cursor)
+    manifest = _write_manifest(partition, run_id, started_at, columns, row_count)
+    with closing(PostgresHook(postgres_conn_id=TARGET_CONN_ID).get_conn()) as target:
+        with target.cursor() as cur:
+            _upsert_run(cur, manifest, "extracted")
+        target.commit()
+    return str(partition)

@@ -1,0 +1,5 @@
+    ensure_tables = SQLExecuteQueryOperator(
+        task_id="ensure_tables",
+        conn_id=TARGET_CONN_ID,
+        sql=ENSURE_TABLES_SQL,
+    )

@@ -1,6 +1,6 @@
 # ingestion-toolkit
 
-> A command line tool that writes validated YAML or JSON ingestion configs, one per source table, for relational sources.
+> A command line tool that writes validated YAML or JSON ingestion configs, one per source table, and renders each into a self-contained Apache Airflow 3 DAG.
 
 ![CI](https://img.shields.io/github/actions/workflow/status/emanuel-luis/ingestion-toolkit/ci.yml)
 ![license](https://img.shields.io/github/license/emanuel-luis/ingestion-toolkit)
@@ -11,24 +11,33 @@
 - Config as a contract: frozen, typed Pydantic models with explicit validators. Every error names the file, the field and a fix.
 - Two ingestion patterns as data: full scan and incremental (watermark), with the write mode derived from the pattern, an optional column contract and a tolerated reject ratio.
 - Deterministic output: the same command writes the same bytes, and a test rebuilds the files in `examples/` from the documented commands.
+- Config to code: Jinja templates with no logic render one DAG file per config. Golden files pin the output, the generated code must parse and be `ruff format` clean, and CI imports the rendered DAGs with the DagBag of Airflow 3.3.2.
+- Data engineering practice in the generated DAG: a landing layer (JSON Lines per run plus a manifest), a bronze table typed from a column contract, a rejects table, run metadata, and a watermark kept in the target database and advanced in the same transaction as the load, so a retry of the same run is idempotent.
 - Property-based tests (Hypothesis) for naming, cron validation, the column spec and the model round trip, on top of CLI tests.
 - A typed, src-layout package built with uv, checked with ruff and strict mypy.
 
-Roadmap: rendering Airflow 3 DAG files from these configs, a change data capture pattern, and a docker compose demo.
+Roadmap: a change data capture pattern with merge loads, `ingest init`, and a docker compose demo that runs the rendered DAGs end to end. Until then the rendered DAGs are checked by import (DagBag) in CI, not run against a database.
 
 ## How it works
 
 ```mermaid
 flowchart LR
   A[ingest add] --> C[(configs/*.yml)] --> V[ingest validate]
-  C -.next.-> R[ingest render]
+  C --> R[ingest render] --> D[(output/*.py)]
+  D --> AF
+  subgraph AF[Airflow 3]
+    S[(source)] -->|extract_to_landing| L[(landing: JSONL per run)]
+    L -->|load_bronze| B[(bronze table)]
+    L -->|contract rejects| X[(ops.ingestion_rejects)]
+    B -.same transaction.- M[(ops.ingestion_runs, ops.ingestion_state)]
+  end
 ```
 
-`ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. Rendering is the next step and is not part of this release.
+`ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. `ingest render` turns each config into a DAG file. The CLI never imports Airflow. See [docs/generated-dags.md](docs/generated-dags.md) for what a rendered DAG does, layer by layer.
 
 ## Tech stack
 
-Python 3.11+, Typer, Pydantic v2, PyYAML, uv, pytest, Hypothesis, ruff, mypy.
+Python 3.11+, Typer, Pydantic v2, PyYAML, Jinja2, uv, pytest, Hypothesis, ruff, mypy.
 
 ## Quickstart
 
@@ -104,6 +113,33 @@ uv run ingest add rdbms incremental \
   --watermark-column updated_at --watermark-type datetime
 ```
 
+### Render DAGs
+
+```bash
+uv run ingest render examples/postgres --output-dir output
+```
+
+This writes `output/erp__orders__fullscan.py` and `output/erp__customers__incremental.py`. Put them in your Airflow `dags` folder, with connections `erp` (the source) and `warehouse` (the target PostgreSQL) defined. `--dry-run` lists the files without writing, and `--template-dir DIR` overrides built-in templates file by file. If any config is invalid nothing is written. The rendered incremental DAG reads like this (shortened):
+
+```python
+@task
+def extract_to_landing() -> str:
+    """Copy rows above the stored watermark into this run's landing partition."""
+    run_id = get_current_context()["run_id"]
+    ...
+    with closing(PostgresHook(postgres_conn_id=TARGET_CONN_ID).get_conn()) as target:
+        with target.cursor() as cur:
+            state = _read_state(cur)
+            _guard_order(cur, state, run_id)
+        lower = _lower_bound(state, run_id)
+        ...
+
+
+with DAG(dag_id=DAG_ID, schedule=SCHEDULE, catchup=False, max_active_runs=1, ...) as dag:
+    ensure_tables = SQLExecuteQueryOperator(task_id="ensure_tables", ...)
+    ensure_tables >> extract_to_landing() >> load_bronze()
+```
+
 Add `--format json` for JSON, `--output-dir` to choose the folder and `--force` to overwrite an existing file. Run `uv run ingest add rdbms fullscan --help` for every option.
 
 Errors go to stderr, one line each, followed by a summary:
@@ -156,15 +192,19 @@ Presets for cron are @once, @hourly, @daily, @weekly, @monthly, @quarterly and @
 
 ```text
 src/ingestion_toolkit/
-  cli/            main, add, validate and shared error output
-  models/         enums and the frozen config models
+  cli/            main, add, validate, render and shared error output
+  models/         enums, the frozen config models and the render contexts (task.py)
+  renderer.py     Jinja environment, context builder, atomic writes
+  sql.py          quoted identifiers and the SQL text of the rendered DAGs
+  templates/      Jinja templates of the DAG file (no logic)
   config_io.py    read, validate and write configs (YAML loader rejects duplicate keys)
   columns.py      the --columns mini-language
   cron.py         schedule validator
   naming.py       identifier rules, DAG ids, bronze table names
   errors.py       error values and the one-line error format
 examples/postgres/  two ready configs, reproduced by tests/test_examples.py
-tests/            unit, property-based and CLI tests
+scripts/          check_dag_imports.py, the DagBag gate CI runs
+tests/            unit, property-based, golden-file and CLI tests (tests/golden)
 docs/             design decisions and the implementation plan
 ```
 
@@ -174,7 +214,9 @@ docs/             design decisions and the implementation plan
 make install lint test
 ```
 
-Without make: `uv sync`, `uv run ruff check`, `uv run ruff format --check`, `uv run mypy` and `uv run pytest`.
+Without make: `uv sync`, `uv run ruff check`, `uv run ruff format --check`, `uv run mypy` and `uv run pytest`. `uv run pytest -m slow` runs the property test that renders hundreds of random configs. After changing a template, run `uv run pytest tests/test_golden.py --update-golden` and read the diff.
+
+Airflow does not run on Windows. The DagBag check needs Linux (or WSL) and an environment with `apache-airflow[postgres]==3.3.2`; the `dag-import` job in `.github/workflows/ci.yml` shows the exact commands.
 
 ## License
 

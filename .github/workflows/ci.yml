@@ -48,6 +48,7 @@ jobs:
         with: { python-version: "${{ matrix.python }}" }
       - run: uv sync --locked
       - run: uv run pytest
+      - run: uv run pytest -m slow
 
   build:
     name: build (wheel, sdist, installed smoke)
@@ -63,13 +64,46 @@ jobs:
       - run: uvx twine==7.0.0 check --strict dist/*
       - name: The wheel ships the py.typed marker
         run: uv run --no-project python -m zipfile -l dist/*.whl | grep -q 'ingestion_toolkit/py.typed'
+      - name: The wheel ships the DAG templates
+        run: uv run --no-project python -m zipfile -l dist/*.whl | grep -q 'ingestion_toolkit/templates/dag_base.py.j2'
       # The installed wheel, without the project on the path: what a user gets.
-      - name: Smoke test (install the wheel, add a config, validate it)
+      - name: Smoke test (install the wheel, add a config, validate and render it)
         run: |
           wheel="$PWD/$(ls dist/*.whl)"
           cd "$(mktemp -d)"
           uv run --isolated --no-project --with "$wheel" ingest --version
           uv run --isolated --no-project --with "$wheel" ingest add rdbms fullscan --source erp --database erp --schema sales --table orders --primary-key id --output-dir configs
           uv run --isolated --no-project --with "$wheel" ingest validate configs
+          uv run --isolated --no-project --with "$wheel" ingest render configs --output-dir dags
+          test -s dags/erp__orders__fullscan.py
+          uv run --isolated --no-project --with "$wheel" ingest render "$GITHUB_WORKSPACE/examples/postgres" --output-dir example-dags
+          test -s example-dags/erp__customers__incremental.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: { name: dist, path: dist/ }
+
+  dag-import:
+    # the env context is not available in a job name; the version lives in env below
+    name: dag-import (Airflow DagBag)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    env:
+      AIRFLOW_VERSION: "3.3.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { python-version: "3.12" }
+      - run: uv sync --locked
+      - name: Render the example configs
+        run: uv run ingest render examples/postgres --output-dir "$RUNNER_TEMP/dags"
+      - name: Install Airflow with its constraints file
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/airflow"
+          VIRTUAL_ENV="$RUNNER_TEMP/airflow" uv pip install \
+            "apache-airflow[postgres]==${AIRFLOW_VERSION}" \
+            -c "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt"
+      - name: Import every rendered DAG with the DagBag
+        run: |
+          "$RUNNER_TEMP/airflow/bin/python" scripts/check_dag_imports.py "$RUNNER_TEMP/dags" \
+            --expected "$(ls examples/postgres | wc -l)"

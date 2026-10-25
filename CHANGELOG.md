@@ -23,6 +23,29 @@ All notable changes to this project are documented here. The format follows
   (pip-audit, zizmor, lowest-direct resolution) and a tag-driven release workflow that is not
   enabled yet.
 
+- `ingest render`: one self-contained Airflow 3 DAG file per config for the fullscan and
+  incremental patterns (`ensure_tables`, `extract_to_landing`, `load_bronze`). Landing is JSON
+  Lines per run with a manifest, bronze is typed from the column contract, rows that break it go
+  to `ops.ingestion_rejects`, and run metadata and the incremental watermark live in the `ops`
+  schema, written in the same transaction as the load. Options: `--output-dir`, `--template-dir`,
+  `--dry-run`. If any config is invalid or fails to render, nothing is written; each file is
+  written atomically.
+- Rendered loads refuse a stale extract: clearing only `load_bronze` of an older run after a
+  later run succeeded fails with a hint to re-run the whole DAG run, instead of duplicating rows
+  or moving the watermark back.
+- Golden files for the two examples (`pytest --update-golden` rewrites them), a Hypothesis
+  property that every valid config renders to parseable, deterministic code, and a
+  `scripts/check_dag_imports.py` DagBag gate run by the new `dag-import` CI job against Airflow
+  3.3.2.
+- `docs/generated-dags.md`, `make render`, and a `slow` pytest marker (excluded by default).
+
+### Changed
+
+- Integer `watermark.initial_value` beyond the bigint range is rejected, because bronze stores
+  integers as bigint.
+- The CI `build` job checks that the wheel ships the templates and renders an example from the
+  installed wheel.
+
 ### Notes
 
 - `watermark.initial_value` is stored as text: a canonical ISO datetime or a canonical integer.

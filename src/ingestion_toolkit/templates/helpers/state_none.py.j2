@@ -1,0 +1,25 @@
+
+
+NEWER_LOAD_SQL = """
+SELECT run_id FROM ops.ingestion_runs
+WHERE dag_id = %s AND run_id <> %s AND status = 'success' AND extracted_at > %s
+LIMIT 1
+"""
+
+
+def _check_not_stale(cur: object, manifest: dict) -> None:
+    """Refuse to load a snapshot older than one already loaded by another run.
+
+    Happens when only load_bronze of an older run is cleared after a later run succeeded.
+    """
+    cur.execute(NEWER_LOAD_SQL, (DAG_ID, manifest["run_id"], manifest["extracted_at"]))
+    newer = cur.fetchone()
+    if newer is not None:
+        raise AirflowFailException(
+            f"run {newer[0]!r} already loaded a newer snapshot than this run's extract. "
+            "Fix: clear the whole DAG run so the extract runs again, not load_bronze alone"
+        )
+
+
+def _advance_state(cur: object, manifest: dict) -> None:
+    """A full scan keeps no watermark."""
