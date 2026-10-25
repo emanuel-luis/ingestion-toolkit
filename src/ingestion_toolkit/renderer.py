@@ -210,7 +210,11 @@ def render_all(
     template_dir: Path | None = None,
     dry_run: bool = False,
 ) -> list[Path]:
-    """Render every config, then write. Raises ConfigFailure, writing nothing, if any fails."""
+    """Render every config, then write. Raises ConfigFailure, writing nothing, if any fails.
+
+    A write error (unwritable or occupied output path) is also a ConfigFailure; files written
+    before it stay, each one complete.
+    """
     renderer = Renderer(template_dir)
     rendered: list[tuple[Config, str]] = []
     errors: list[ConfigError] = []
@@ -226,4 +230,5 @@ def render_all(
     try:
         return [write_dag(text, output_dir, config.dag_id) for config, text in rendered]
     except OSError as exc:
-        raise _fail(output_dir, "output", f"cannot write: {exc}", "check the directory") from exc
+        error = _fail(output_dir, "output", f"cannot write: {exc}", "check the directory").error
+        raise ConfigFailure([error]) from exc
