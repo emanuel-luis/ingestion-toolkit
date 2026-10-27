@@ -9,20 +9,10 @@ The blueprint the three phase PRs follow. Design decisions taken here are logged
 Airflow 3 DAG file. The CLI never imports Airflow. A rendered DAG moves data through three named
 layers:
 
-```mermaid
-flowchart LR
-  subgraph CLI["ingest CLI (never imports Airflow)"]
-    A[ingest add] --> C[(configs/*.yml)] --> V[ingest validate]
-    C --> R[ingest render] --> D[(output/dag_*.py)]
-  end
-  subgraph AF["Airflow 3 + common.sql + postgres providers"]
-    S[(source: relational DB)] -->|extract_to_landing| L[(landing: JSONL per run_id)]
-    L -->|load_bronze: contract + checks| B[(bronze.source__table)]
-    L -->|rows failing the contract| X[(ops.ingestion_rejects)]
-    B -.same transaction.- M[(ops.ingestion_runs / ops.ingestion_state)]
-  end
-  D --> AF
-```
+![Data flow: ingest render validates a config and writes a DAG file; in each run ensure_tables creates the tables, extract_to_landing copies the source rows above the stored bound into a landing partition, and load_bronze checks them and writes bronze, the rejects, the run row and the watermark in one transaction.](diagrams/data-flow.svg)
+
+Source: [data-flow.d2](diagrams/data-flow.d2). The system in context is in
+[architecture.svg](diagrams/architecture.svg).
 
 - **source**: any connection whose hook is a `DbApiHook` (Postgres in the demo, SQL Server for
   the rowversion CDC mechanism).

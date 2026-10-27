@@ -1,0 +1,79 @@
+# The system in context: who runs the CLI, what it reads and writes, and where the rendered DAGs
+# run. Grounded in src/ingestion_toolkit/{cli/,config_io.py,models/,renderer.py,sql.py,templates/},
+# compose.yaml, demo/postgres/initdb/00_init.sh and .github/workflows/ci.yml. Layer detail is in
+# data-flow.d2 and data-flow-patterns.d2.
+...@_style
+
+title: "Architecture: from a config file to a DAG that loads bronze" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+direction: down
+
+engineer: Data engineer {class: actor}
+ci: "GitHub Actions · ci.yml\nlint, test with golden files,\nbuild, dag-import, smoke" {class: external}
+
+cli: "ingest CLI · Python package, never imports Airflow" {
+  class: group
+  commands: "Typer commands\ninit · add rdbms | mssql\nvalidate · render" {class: process}
+  templates: "Jinja2 templates\ndag_base, helpers/, tasks/\n(--template-dir overrides)" {class: source}
+  sql: "sql.py\nquoted identifiers,\nevery SQL string" {class: process}
+  io: "config_io\nread and write YAML or JSON,\nrejects duplicate keys" {class: process}
+  models: "Pydantic models\nfrozen Config, validators\nwith a Fix hint" {class: check}
+  renderer: "renderer\nbuild_dag_context, py filter,\nall-or-nothing write" {class: process}
+
+  commands -> io
+  commands -> models
+  commands -> renderer
+  templates -> renderer
+  sql -> renderer
+}
+
+configs: "configs/*.yml or *.json\none config per source table" {class: source}
+dags: "output/{dag_id}.py\none self-contained DAG file per\nconfig, copied to the dags folder" {class: source}
+
+airflow: "Airflow 3.3.2 (compose)" {
+  class: group
+  scheduler: "airflow standalone\nscheduler, LocalExecutor" {class: process}
+  dag: "rendered DAG\nensure_tables → extract_to_landing\n→ load_bronze" {class: process}
+  scheduler -> dag
+}
+
+landing: "landing · demo/data/landing\nbind mount on the worker:\nJSON Lines + _manifest.json per run" {class: store}
+
+postgres: "PostgreSQL 18 (compose)" {
+  class: group
+  # every edge comes in from above: a bottom label stays clear of them
+  label.near: bottom-left
+  erp: "database erp · schema sales\norders, customers, products\nerp_reader: SELECT only" {class: store}
+  warehouse: "database warehouse\nbronze.* and ops.* tables\nwarehouse_writer" {class: store}
+  metadata: "database airflow\nAirflow metadata" {class: store}
+}
+
+mssql: "SQL Server source\nrowversion CDC; not in the\ndemo, golden file and DagBag" {class: external}
+
+engineer -> cli.commands
+cli.io <-> configs
+cli.renderer -> dags
+dags -> airflow.dag
+airflow.dag -> postgres.erp: "extract"
+airflow.dag -> landing
+airflow.dag -> postgres.warehouse: "load"
+airflow.dag -> mssql: "extract"
+airflow.scheduler -> postgres.metadata {class: meta}
+ci -> cli
+ci -> airflow: "dag-import,\nsmoke"
+
+legend: Legend {
+  class: legend
+  grid-columns: 4
+  actor: actor {class: [actor; legend-actor]}
+  external: external system {class: [external; legend-item]}
+  process: process {class: [process; legend-item]}
+  check: contract or check {class: [check; legend-item]}
+  file: "file: config,\ntemplate or DAG" {class: [source; legend-item]}
+  store: database or stored data {class: [store; legend-store]}
+  edges: "solid arrow: data or a call\ndashed: metadata" {shape: text; style.font-size: 13}
+}

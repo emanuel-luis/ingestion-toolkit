@@ -1,0 +1,44 @@
+# One run of a rendered incremental DAG (erp__customers__incremental), task by task, as
+# demo/run_dag.py and the smoke test drive it. Grounded in templates/dag_base.py.j2,
+# templates/tasks/{ensure_tables,extract/windowed,load_bronze}.py.j2, templates/tasks/load/append.py.j2
+# and templates/helpers/{state,landing,contract,run_metadata}.py.j2.
+...@_style
+
+run: "A DAG run: erp__customers__incremental" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  airflow: "Airflow worker\n(task code)" {class: process}
+  ops: "warehouse\nops tables" {class: store}
+  source: "source\nerp.sales.customers" {class: store}
+  landing: "landing\nrun_id=… partition" {class: store}
+  bronze: "warehouse\nbronze.erp__customers" {class: store}
+
+  ensure: "ensure_tables" {
+    airflow -> ops: "advisory lock; CREATE IF NOT EXISTS\nschema bronze and the three ops tables"
+  }
+
+  extract: "extract_to_landing" {
+    airflow -> ops: "read ops.ingestion_state"
+    ops -> airflow: "watermark, previous_watermark, run_id" {class: meta}
+    airflow -> airflow: "out-of-order guard; bound:\nprevious_watermark on a retry of\nthis run, else the watermark"
+    airflow -> source: "SELECT ... WHERE updated_at > bound"
+    source -> airflow: "rows, fetchmany(10_000)" {class: meta}
+    airflow -> landing: "part-00000.jsonl, then\n_manifest.json last"
+    airflow -> ops: "ops.ingestion_runs: status extracted"
+  }
+
+  load: "load_bronze · one transaction" {
+    airflow -> landing: "read this run's manifest"
+    airflow -> ops: "lock the state row FOR UPDATE;\nstale-load guard on watermark_from"
+    airflow -> bronze: "CREATE IF NOT EXISTS, drift check,\nDELETE this run's rows (append)"
+    airflow -> bronze: "insert valid rows in batches"
+    airflow -> ops: "rejects, advance the watermark,\nrun row success; COMMIT"
+  }
+
+  failed: "or a data check fails: drift, a refused value, duplicate key, counts, reject ratio" {
+    airflow -> bronze: "ROLLBACK"
+    airflow -> ops: "rejects and a failed run row,\nin their own transaction"
+    airflow -> airflow: "AirflowFailException:\nno retry"
+  }
+}
