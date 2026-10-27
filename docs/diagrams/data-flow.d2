@@ -62,6 +62,7 @@ dagfile -> run.extract {class: layer}
 source -> run.extract
 source -> run.order_guard {class: layer}
 run.extract -> warehouse.state {class: meta}
+run.extract -> warehouse.runs {class: meta}
 run.load -> warehouse.bronze
 run.load -> warehouse.rejects
 run.load -> warehouse.runs {class: meta}

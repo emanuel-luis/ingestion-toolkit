@@ -13,7 +13,7 @@ title: "Architecture: from a config file to a DAG that loads bronze" {
 direction: down
 
 engineer: Data engineer {class: actor}
-ci: "GitHub Actions · ci.yml\nlint, test with golden files,\nbuild, dag-import, smoke" {class: external}
+ci: "GitHub Actions · ci.yml\nlint, test with golden files, build,\ndag-import (DagBag in its own venv),\nsmoke, diagrams" {class: external}
 
 cli: "ingest CLI · Python package, never imports Airflow" {
   class: group
@@ -52,7 +52,7 @@ postgres: "PostgreSQL 18 (compose)" {
   metadata: "database airflow\nAirflow metadata" {class: store}
 }
 
-mssql: "SQL Server source\nrowversion CDC; not in the\ndemo, golden file and DagBag" {class: external}
+mssql: "SQL Server source, rowversion\nCDC; not in the demo, covered by\na golden file and the DagBag check" {class: external}
 
 engineer -> cli.commands
 cli.io <-> configs
@@ -64,7 +64,7 @@ airflow.dag -> postgres.warehouse: "load"
 airflow.dag -> mssql: "extract"
 airflow.scheduler -> postgres.metadata {class: meta}
 ci -> cli
-ci -> airflow: "dag-import,\nsmoke"
+ci -> airflow: "smoke"
 
 legend: Legend {
   class: legend
