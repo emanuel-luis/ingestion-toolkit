@@ -8,19 +8,19 @@ instead of editing the file. Output is deterministic: no timestamps, no versions
 
 ## Layers
 
-```mermaid
-flowchart LR
-  S[(source)] -->|extract_to_landing| L[(landing: JSONL per run_id)]
-  L -->|load_bronze| B[(bronze.source__table)]
-  L -->|rows failing the contract| X[(ops.ingestion_rejects)]
-  B -.same transaction.- M[(ops.ingestion_runs and ops.ingestion_state)]
-```
+![Data flow: ingest render validates a config, builds the template context and writes a DAG file only when every config is valid and the code parses. In a run, ensure_tables creates the bronze schema and the ops tables; extract_to_landing reads the source above the stored bound, behind the out-of-order guard, into a landing partition with its manifest; load_bronze opens with the stale-load guard, runs the row and batch checks and writes valid rows to bronze, rejected rows to ops.ingestion_rejects, the run row to ops.ingestion_runs and the watermark to ops.ingestion_state.](diagrams/data-flow.svg)
+
+Source: [data-flow.d2](diagrams/data-flow.d2).
 
 Every DAG has the same three tasks, `catchup=False` and `max_active_runs=1`:
 
 ```text
 ensure_tables >> extract_to_landing >> load_bronze
 ```
+
+![Sequence of one run of erp__customers__incremental: ensure_tables creates the tables; extract_to_landing reads the state, applies the out-of-order guard, selects the rows above the bound, writes the JSON Lines file and the manifest and marks the run extracted; load_bronze locks the state row for the stale-load guard, prepares bronze, inserts the valid rows and commits the rejects, the new watermark and the success row; a failed data check rolls back and records the rejects and a failed run row without retry.](diagrams/user-flows-dag-run.svg)
+
+Source: [user-flows-dag-run.d2](diagrams/user-flows-dag-run.d2).
 
 ### ensure_tables
 
@@ -109,6 +109,10 @@ partitions keep the change history.
 
 ## State, idempotency and re-runs
 
+![The three load patterns side by side. Full scan selects the whole table, its stale-load guard checks ops.ingestion_runs for a later loaded snapshot, and it overwrites bronze (or appends). Incremental selects rows above the watermark, locks the state row for its stale-load guard, appends (or merges) and advances ops.ingestion_state. CDC selects changes above the sequence in order, uses the same guard and state, and merges with an upsert that never lets an older sequence replace a newer one.](diagrams/data-flow-patterns.svg)
+
+Source: [data-flow-patterns.d2](diagrams/data-flow-patterns.d2).
+
 - Full scan overwrite is idempotent by construction. Append deletes the run's own rows first, so
   re-running a run never duplicates them. Merge is idempotent because an upsert of the same
   versions changes nothing.
@@ -132,6 +136,10 @@ partitions keep the change history.
 ## ops tables
 
 Created by `ensure_tables`, in the target database.
+
+![Entity diagram of ops.ingestion_runs (primary key dag_id, run_id), ops.ingestion_rejects (dag_id, run_id, row_number), ops.ingestion_state (dag_id) and the merge target bronze.erp__products (primary key id, with _ingest_run_id, _ingest_loaded_at and _ingest_deleted). There are no foreign keys; dashed arrows show the logical joins on run_id from the rejects, the state and the bronze rows to the runs table.](diagrams/data-model.svg)
+
+Source: [data-model.d2](diagrams/data-model.d2).
 
 `ops.ingestion_runs`, primary key (dag_id, run_id):
 

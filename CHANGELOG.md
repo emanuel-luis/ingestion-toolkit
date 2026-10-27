@@ -58,6 +58,11 @@ All notable changes to this project are documented here. The format follows
 - Demo: `sales.products` with a trigger-stamped `version_stamp`, mutations and smoke assertions
   for the products CDC DAG.
 
+- Diagrams as D2 sources in `docs/diagrams/` with their rendered SVGs: architecture, data flow,
+  the three load patterns, the ops and bronze tables, and the CLI, DAG run and CI sequences.
+  `make d2-install`, `make diagrams`, `make diagrams-check` and `make diagrams-watch` use D2
+  v0.9.0 pinned by checksum, and the new `diagrams` CI job fails when a committed SVG is stale.
+
 ### Changed
 
 - `ingest render` no longer refuses `write_mode: merge`.
@@ -73,6 +78,8 @@ All notable changes to this project are documented here. The format follows
   integers as bigint.
 - The CI `build` job checks that the wheel ships the templates and renders an example from the
   installed wheel.
+- The README, `docs/generated-dags.md` and `docs/REFACTOR_PLAN.md` show the SVG diagrams instead
+  of inline Mermaid.
 
 ### Notes
 
