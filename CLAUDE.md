@@ -17,6 +17,10 @@ uv run pytest tests/test_golden.py --update-golden   # rewrite goldens, then rea
 make render                    # render examples/postgres into output/
 make install lint test         # the same through make
 uv build                       # sdist and wheel
+make d2-install                # once, Linux or WSL: D2 v0.9.0 pinned by sha256
+make diagrams                  # render docs/diagrams/*.d2 to .svg (commit both)
+make diagrams-check            # what the CI job diagrams runs: render, fail on any SVG diff
+make diagrams-watch NAME=architecture   # live preview while editing one diagram
 ```
 
 On this machine `python3` is a stub: use `uv run`.
@@ -38,6 +42,12 @@ On this machine `python3` is a stub: use `uv run`.
 - `tests/test_generated_helpers.py` runs the pure helpers of a rendered DAG without Airflow.
 - `tests/strategies.py`: Hypothesis strategy for valid config dicts. `tests/golden/`: rendered
   DAGs of the examples.
+- `docs/diagrams/`: D2 sources and their committed SVGs (architecture, data-flow,
+  data-flow-patterns, data-model, user-flows-*), all importing `_style.d2` (ELK, light and dark
+  themes, one class per element kind). Edit `.d2` files with an editor, not sed or a script over
+  stdin (they mangle `\n` and `·`), then `make diagrams` in WSL. Keep each under ~1,300 px wide
+  and ~25 nodes; no Mermaid in the repo. A diagram mirrors the code: update it when the
+  templates, the ops DDL, the CLI commands or the CI jobs it shows change.
 
 ## Invariants
 

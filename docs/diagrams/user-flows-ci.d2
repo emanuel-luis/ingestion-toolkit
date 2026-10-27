@@ -1,0 +1,38 @@
+# What CI proves on a pull request: golden files, the Airflow DagBag import and the compose
+# smoke test. Grounded in .github/workflows/ci.yml, tests/test_golden.py, tests/test_examples.py,
+# scripts/check_dag_imports.py, demo/smoke.sh and demo/smoke/*.sql.
+...@_style
+
+ci: "CI on a pull request: golden files, DagBag, smoke" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  engineer: "Data engineer" {class: actor}
+  actions: "GitHub Actions\nci.yml" {class: external}
+  pytest: pytest {class: check}
+  package: "ingestion_toolkit\nCLI and renderer" {class: process}
+  dagbag: "Airflow 3.3.2\nDagBag" {class: check}
+  stack: "compose demo\nPostgres, Airflow" {class: process}
+
+  engineer -> actions: "open a pull request"
+  actions -> actions: "lint: ruff check and\nruff format --check\n(goldens too), mypy"
+
+  test: "test (Python 3.11 and 3.14)" {
+    actions -> pytest: "uv run pytest"
+    pytest -> package: "test_golden: render\nevery example config"
+    pytest -> pytest: "byte for byte equal to\ntests/golden/{name}.py"
+    pytest -> package: "test_examples: the\ndocumented ingest add\ncommands rebuild examples/"
+  }
+
+  dag_import: "dag-import" {
+    actions -> package: "ingest render\nexamples/postgres\nexamples/mssql"
+    actions -> dagbag: "check_dag_imports.py:\nimport every file"
+    dagbag -> actions: "fail on an import error, a DAG\nwarning or a DAG count other\nthan the example configs" {class: meta}
+  }
+
+  smoke: "smoke" {
+    actions -> stack: "make smoke: render into\ndemo/dags, start from\nan empty volume"
+    actions -> stack: "run the three DAGs: first run,\nsame run again, next day,\nafter a source change"
+    stack -> actions: "demo/smoke/*.sql: counts,\nrejects, watermark, re-runs" {class: meta}
+  }
+}

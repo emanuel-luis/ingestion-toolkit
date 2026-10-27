@@ -1,0 +1,79 @@
+# From a config to bronze: what ingest render checks, then one run of the rendered DAG, with the
+# landing layer, the checks of load_bronze and the ops tables. Grounded in config_io.py,
+# renderer.py, sql.py, templates/{dag_base.py.j2,helpers/,tasks/} and docs/generated-dags.md.
+# The three patterns side by side are in data-flow-patterns.d2.
+...@_style
+
+title: "Data flow: config to DAG file, then one run from source to bronze" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+direction: down
+
+config: "configs/{source}__{table}__{pattern}.yml\none file per source table" {class: source}
+
+render: "ingest render" {
+  class: group
+  validate: "read and validate\nduplicate keys refused,\nPydantic validators, every\nerror with a Fix hint" {class: check}
+  build: "build_dag_context\nthe pattern picks the extract\ntemplate, the write mode the\nload template; sql.py writes\nevery SQL string" {class: process}
+  parse: "rendered code must parse;\none invalid config and\nnothing is written" {class: check}
+  validate -> build
+  validate -> parse {class: layer}
+}
+
+dagfile: "{dag_id}.py · self-contained DAG\nensure_tables >> extract_to_landing\n>> load_bronze" {class: source}
+
+source: "source table, or the CDC\nchange table, through any\nDbApiHook connection" {class: store}
+
+run: "One DAG run (Airflow 3)" {
+  class: group
+  # the edges come in at the left and middle of the top: keep the label on the right
+  label.near: top-right
+  ensure: "ensure_tables, first\nadvisory lock, then CREATE IF\nNOT EXISTS the bronze schema\nand the three ops tables" {class: process}
+  extract: "extract_to_landing\nfull scan: every row;\nincremental and CDC: rows\nabove the stored bound" {class: process}
+  order_guard: "out-of-order guard:\nre-running a run that moved\nthe watermark fails once a\nlater run moved it again" {class: check}
+  landing: "landing/{source}/{table}/run_id=…/\npart-00000.jsonl, then\n_manifest.json written last" {class: store}
+  load: "load_bronze · one transaction\nCREATE IF NOT EXISTS bronze,\ndrift check, prepare by write\nmode, insert or upsert batches" {class: process}
+  stale: "stale-load guard, first:\nrefuses an extract a later\nrun already superseded" {class: check}
+  quality: "row checks: not null, casts\nbatch checks: no duplicate key,\ncounts add up, reject ratio\nat most max_reject_ratio" {class: check}
+
+  extract -> landing
+  landing -> load
+  landing -> stale {class: layer}
+  landing -> quality {class: layer}
+}
+
+warehouse: "Target PostgreSQL (warehouse)" {
+  class: group
+  # every edge comes in from above: a bottom label stays clear of them
+  label.near: bottom-left
+  bronze: "bronze.{source}__{table}\nvalid rows, typed from\nthe column contract" {class: store}
+  rejects: "ops.ingestion_rejects\nrejected rows: reason\nand JSON payload" {class: store}
+  runs: "ops.ingestion_runs\nextracted, then\nsuccess or failed" {class: store}
+  state: "ops.ingestion_state\nwatermark: read by the\nextract, advanced by\nthe load's transaction" {class: store}
+}
+
+config -> render.validate
+render.build -> dagfile
+dagfile -> run.ensure
+dagfile -> run.extract {class: layer}
+source -> run.extract
+source -> run.order_guard {class: layer}
+run.extract -> warehouse.state {class: meta}
+run.extract -> warehouse.runs {class: meta}
+run.load -> warehouse.bronze
+run.load -> warehouse.rejects
+run.load -> warehouse.runs {class: meta}
+run.load -> warehouse.state {class: meta}
+
+legend: Legend {
+  class: legend
+  grid-columns: 5
+  file: "file: config or DAG" {class: [source; legend-item]}
+  process: "process or task" {class: [process; legend-item]}
+  check: "contract, check or guard" {class: [check; legend-item]}
+  store: "table or stored data" {class: [store; legend-store]}
+  edges: "solid arrow: data\ndashed: state, run\nmetadata" {shape: text; style.font-size: 13}
+}

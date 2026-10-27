@@ -1,0 +1,57 @@
+# The three load patterns side by side, as the rendered DAGs of examples/postgres run them: the
+# extract SQL, the stale-load guard that opens load_bronze, the write mode and the state each one
+# reads or advances. Grounded in sql.py, templates/tasks/{extract,load}/, templates/helpers/
+# {state,state_none}.py.j2 and docs/generated-dags.md.
+...@_style
+
+title: "Load patterns: full scan, incremental watermark, CDC with merge" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+direction: right
+
+fullscan: "Full scan · erp__orders__fullscan" {
+  class: group
+  extract: "extract\nSELECT <columns or *>\nFROM the table, no bound" {class: process}
+  guard: "stale-load guard\nrefuse when another run\nalready loaded a snapshot\nextracted later" {class: check}
+  load: "overwrite (default)\nDELETE FROM bronze, then\ninsert, in one transaction;\nor append" {class: process}
+  bronze: "bronze.erp__orders\nthe latest snapshot" {class: store}
+  runs: "ops.ingestion_runs\nextracted_at of every\nsuccessful run" {class: store}
+  extract -> guard -> load -> bronze
+  guard -> runs {class: meta}
+}
+
+incremental: "Incremental watermark · erp__customers__incremental" {
+  class: group
+  extract: "extract\nWHERE updated_at > bound:\nthe stored watermark, or\nprevious_watermark on a\nretry of the same run" {class: process}
+  guard: "stale-load guard\nlock the state row FOR\nUPDATE; the manifest's\nwatermark_from must equal\nthe bound it gives now" {class: check}
+  load: "append (default)\nDELETE this run's rows,\nthen insert; or merge" {class: process}
+  bronze: "bronze.erp__customers\nevery extracted version" {class: store}
+  state: "ops.ingestion_state\nread by the extract,\nadvanced to watermark_to\nin the load transaction" {class: store}
+  extract -> guard -> load -> bronze
+  extract -> state {class: meta}
+  load -> state {class: meta}
+}
+
+cdc: "CDC with merge · erp__products__cdc" {
+  class: group
+  extract: "extract, from the table\nor the change table\nWHERE version_stamp > bound\nORDER BY version_stamp;\nrowversion: also below\nMIN_ACTIVE_ROWVERSION()" {class: process}
+  guard: "stale-load guard\nthe same check as\nincremental, on the\nsequence column" {class: check}
+  load: "merge\nINSERT … ON CONFLICT (id)\nDO UPDATE … WHERE\nt.seq <= EXCLUDED.seq" {class: process}
+  bronze: "bronze.erp__products\none current row per key;\n_ingest_deleted: soft\ndeletes, when an operation\ncolumn is configured" {class: store}
+  state: "ops.ingestion_state\nthe highest sequence\nextracted, same rules\nas incremental" {class: store}
+  extract -> guard -> load -> bronze
+  extract -> state {class: meta}
+  load -> state {class: meta}
+}
+
+legend: Legend {
+  class: legend
+  grid-columns: 4
+  process: "task step" {class: [process; legend-item]}
+  check: "guard" {class: [check; legend-item]}
+  store: "table" {class: [store; legend-store]}
+  edges: "solid arrow: data\ndashed: state or run\nmetadata read or written;\nall guards fail without retry" {shape: text; style.font-size: 13}
+}

@@ -1,0 +1,37 @@
+# Engineer journey from an empty folder to DAG files, as the README's "Start a project" and
+# Quickstart run it. Grounded in src/ingestion_toolkit/cli/{init,add,validate,render}.py,
+# config_io.py and renderer.py.
+...@_style
+
+cli: "ingest init → add → validate → render" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  engineer: "Data engineer" {class: actor}
+  ingest: "ingest CLI" {class: process}
+  models: "Pydantic\nConfig" {class: check}
+  project: "my-ingestion/\nconfigs/, output/" {class: source}
+  renderer: "renderer and\nJinja2 templates" {class: process}
+  airflow: "Airflow\ndags folder" {class: process}
+
+  engineer -> ingest: "ingest init my-ingestion"
+  ingest -> project: "starter config, output/,\n.gitignore (created, or\noutput/ appended)"
+
+  engineer -> ingest: "ingest add rdbms incremental\n--source erp --table customers\n--watermark-column updated_at …"
+  ingest -> models: "the options given;\ndefaults live in\nthe models"
+  models -> ingest: "a valid Config, or\nevery error with a\nFix hint, exit 1" {class: meta}
+  ingest -> project: "configs/erp__customers__\nincremental.yml; --force\nto overwrite"
+
+  engineer -> ingest: "ingest validate\nmy-ingestion/configs"
+  ingest -> project: "read every .yml, .json\n(duplicate keys refused)"
+  ingest -> models: "validate each file"
+  ingest -> engineer: "error lines, then\nN valid, M invalid" {class: meta}
+
+  engineer -> ingest: "ingest render my-ingestion/\nconfigs --output-dir\nmy-ingestion/output"
+  ingest -> models: "validate all: one invalid\nconfig, nothing written"
+  ingest -> renderer: "valid configs"
+  renderer -> renderer: "render; the code\nmust parse"
+  renderer -> project: "output/{dag_id}.py\n(temp file, os.replace)"
+
+  engineer -> airflow: "copy the DAG files; define the connections erp and warehouse"
+}

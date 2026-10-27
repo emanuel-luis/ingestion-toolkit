@@ -1,0 +1,77 @@
+# Tables the rendered DAGs create in the target database: the three ops tables (OPS_DDL in
+# templates/helpers/run_metadata.py.j2, created by ensure_tables) and one bronze table, here the
+# merge target of examples/postgres/erp__products__cdc.yml (_create_sql in
+# templates/helpers/contract.py.j2, tests/golden/erp__products__cdc.py). The DDL declares no
+# foreign keys: the dashed arrows are the joins the DAG code relies on.
+...@_style
+
+title: "Data model: ops tables and a bronze merge table" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+note: "Database warehouse. No foreign keys in the DDL: dashed arrows are logical joins on dag_id\nand run_id. Append and overwrite tables have no primary key and no _ingest_deleted; without a\ncolumn contract every data column is text. Only incremental and CDC DAGs write ingestion_state." {
+  shape: text
+  near: bottom-center
+  style.font-size: 14
+}
+
+direction: down
+
+ingestion_runs: "ops.ingestion_runs" {
+  shape: sql_table
+  dag_id: text {constraint: primary_key}
+  run_id: text {constraint: primary_key}
+  source: text
+  source_table: text
+  target_table: text
+  pattern: text
+  status: "text: extracted, success, failed"
+  watermark_from: text
+  watermark_to: text
+  rows_extracted: bigint
+  rows_loaded: bigint
+  rows_rejected: bigint
+  landing_path: text
+  started_at: timestamptz
+  extracted_at: timestamptz
+  finished_at: timestamptz
+  error: text
+}
+
+ingestion_rejects: "ops.ingestion_rejects" {
+  shape: sql_table
+  dag_id: text {constraint: primary_key}
+  run_id: text {constraint: primary_key}
+  row_number: bigint {constraint: primary_key}
+  reason: text
+  payload: jsonb
+  rejected_at: timestamptz
+}
+
+ingestion_state: "ops.ingestion_state" {
+  shape: sql_table
+  dag_id: text {constraint: primary_key}
+  watermark: text
+  watermark_type: text
+  previous_watermark: text
+  run_id: text
+  updated_at: timestamptz
+}
+
+erp__products: "bronze.erp__products" {
+  shape: sql_table
+  id: bigint {constraint: primary_key}
+  name: text
+  category: text
+  price: numeric
+  version_stamp: "bigint not null"
+  _ingest_run_id: "text not null"
+  _ingest_loaded_at: "timestamptz not null"
+  _ingest_deleted: "boolean not null"
+}
+
+ingestion_rejects.run_id -> ingestion_runs.run_id: "the run's rejects" {class: meta}
+ingestion_state.run_id -> ingestion_runs.run_id: "the run that last\nmoved the watermark" {class: meta}
+erp__products._ingest_run_id -> ingestion_runs.run_id: "the run that\nwrote the row" {class: meta}

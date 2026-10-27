@@ -20,20 +20,11 @@ The rendered DAGs run end to end against Postgres in the compose demo below, and
 
 ## How it works
 
-```mermaid
-flowchart LR
-  A[ingest add] --> C[(configs/*.yml)] --> V[ingest validate]
-  C --> R[ingest render] --> D[(output/*.py)]
-  D --> AF
-  subgraph AF[Airflow 3]
-    S[(source)] -->|extract_to_landing| L[(landing: JSONL per run)]
-    L -->|load_bronze| B[(bronze table)]
-    L -->|contract rejects| X[(ops.ingestion_rejects)]
-    B -.same transaction.- M[(ops.ingestion_runs, ops.ingestion_state)]
-  end
-```
+![Architecture: a data engineer runs the ingest CLI, whose commands read and write YAML or JSON configs through config_io, validate them with the Pydantic models and render DAG files with Jinja2 templates and sql.py. Airflow 3.3.2 runs each rendered DAG, which extracts from the erp Postgres database (or a SQL Server source), writes a landing partition and loads the warehouse database's bronze and ops tables; GitHub Actions tests the CLI and imports and runs the DAGs.](docs/diagrams/architecture.svg)
 
-`ingest init` lays out a project, `ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. `ingest render` turns each config into a DAG file. The CLI never imports Airflow. See [docs/generated-dags.md](docs/generated-dags.md) for what a rendered DAG does, layer by layer.
+Source: [architecture.d2](docs/diagrams/architecture.d2).
+
+`ingest init` lays out a project, `ingest add` builds a config from command line options, validates it and writes it. `ingest validate` checks files or directories and reports every problem it finds. `ingest render` turns each config into a DAG file. The CLI never imports Airflow. See [docs/generated-dags.md](docs/generated-dags.md) for what a rendered DAG does, layer by layer, with the data flow, the three load patterns and the tables it writes.
 
 ## Tech stack
 
@@ -142,6 +133,10 @@ uv run ingest render my-ingestion/configs --output-dir my-ingestion/output
 ```
 
 `ingest init [DIR]` writes `configs/erp__orders__fullscan.yml` (a commented starter that validates), and an empty `output/`, and makes git ignore `output/`: it creates `.gitignore` or appends the line to an existing one, never replacing it. It refuses to overwrite an existing starter config without `--force`.
+
+![Sequence from an empty folder to DAG files: ingest init writes the starter config, output/ and .gitignore; ingest add passes the given options to the Pydantic Config and writes a config file; ingest validate reads and validates every file; ingest render validates all of them, renders each through the Jinja2 templates and writes one DAG file per config; the engineer copies the files to the Airflow dags folder.](docs/diagrams/user-flows-cli.svg)
+
+Source: [user-flows-cli.d2](docs/diagrams/user-flows-cli.d2).
 
 ### Render DAGs
 
@@ -271,6 +266,7 @@ compose.yaml      the demo stack; demo/ holds the seed data, smoke test and rend
 scripts/          check_dag_imports.py, the DagBag gate CI runs
 tests/            unit, property-based, golden-file and CLI tests (tests/golden)
 docs/             design decisions, the implementation plan, generated DAGs and the CDC contract
+docs/diagrams/    D2 sources and the SVG files rendered from them
 ```
 
 ## Development
@@ -280,6 +276,23 @@ make install lint test
 ```
 
 Without make: `uv sync`, `uv run ruff check`, `uv run ruff format --check`, `uv run mypy` and `uv run pytest`. `uv run pytest -m slow` runs the property test that renders hundreds of random configs. After changing a template, run `uv run pytest tests/test_golden.py --update-golden` and read the diff.
+
+![Sequence of the CI checks on a pull request: lint covers the golden files; the test job renders every example and compares it byte for byte with tests/golden, and rebuilds examples/ from the documented ingest add commands; dag-import renders the examples and imports them with the Airflow 3.3.2 DagBag; smoke starts the compose demo from an empty volume, runs the three DAGs through four scenarios and checks them with SQL assertions.](docs/diagrams/user-flows-ci.svg)
+
+Source: [user-flows-ci.d2](docs/diagrams/user-flows-ci.d2).
+
+### Diagrams
+
+The diagrams are [D2](https://d2lang.com) sources in `docs/diagrams/*.d2`, rendered to the SVG files committed next to them. The layout engine, themes and colors live in `docs/diagrams/_style.d2`. Rendering needs D2 v0.9.0, pinned in the `Makefile` with its checksum, on Linux or WSL:
+
+```bash
+make d2-install                          # once: the pinned D2 into ~/.local/share/d2
+make diagrams                            # render every docs/diagrams/*.d2 to .svg
+make diagrams-check                      # render, then fail if a committed SVG differs
+make diagrams-watch NAME=architecture    # live preview in the browser while editing
+```
+
+Commit the `.d2` change together with its re-rendered `.svg`: the `diagrams` CI job runs `make diagrams-check` and uploads the SVGs it rendered.
 
 Airflow does not run on Windows. The DagBag check needs Linux (or WSL) and an environment with `apache-airflow[postgres]==3.3.2`; the `dag-import` job in `.github/workflows/ci.yml` shows the exact commands.
 
